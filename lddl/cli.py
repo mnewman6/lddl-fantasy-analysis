@@ -19,6 +19,13 @@ report_app = typer.Typer(
 )
 app.add_typer(report_app, name="report")
 
+validate_app = typer.Typer(
+    name="validate",
+    help="Data-quality checks against the local warehouse.",
+    no_args_is_help=True,
+)
+app.add_typer(validate_app, name="validate")
+
 
 @app.command()
 def ingest(
@@ -48,6 +55,26 @@ def snapshot() -> None:
     """Snapshot today's FantasyCalc dynasty values into the local store."""
     rprint("[yellow]snapshot: not yet implemented (build step 3)[/yellow]")
     raise typer.Exit(code=1)
+
+
+@validate_app.command("ingest")
+def validate_ingest_cmd() -> None:
+    """Run all 21 ingest data-quality checks against the local DuckDB store."""
+    from lddl.config import get_settings
+    from lddl.validate import Severity, run_validation
+
+    settings = get_settings()
+    if not settings.duckdb_path.exists():
+        rprint(
+            f"[red]No DuckDB file at {settings.duckdb_path}.[/red] "
+            "Run `lddl ingest` first."
+        )
+        raise typer.Exit(code=2)
+    output_path = settings.output_dir / "validation_report.md"
+    results = run_validation(settings.duckdb_path, output_path)
+    rprint(f"\n[dim]Markdown report: {output_path}[/dim]")
+    if any(r.severity == Severity.RED for r in results):
+        raise typer.Exit(code=1)
 
 
 @report_app.command("league-state")
