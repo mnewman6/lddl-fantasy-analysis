@@ -179,6 +179,34 @@ CREATE TABLE IF NOT EXISTS playoff_bracket (
     PRIMARY KEY (league_id, bracket, match_id)
 );
 
+CREATE TABLE IF NOT EXISTS fc_snapshots (
+    snapshot_date         DATE,
+    fc_player_id          INTEGER,    -- FantasyCalc internal id
+    sleeper_id            VARCHAR,    -- maps to players.player_id for human players;
+                                       -- for picks, takes the form 'DP_<season_offset>_<slot>'
+    name                  VARCHAR,
+    position              VARCHAR,    -- 'QB','RB','WR','TE','PICK', etc.
+    team                  VARCHAR,
+    age                   DOUBLE,
+    value                 INTEGER,
+    overall_rank          INTEGER,
+    position_rank         INTEGER,
+    trend_30_day          INTEGER,
+    redraft_value         INTEGER,
+    combined_value        INTEGER,
+    tier                  INTEGER,
+    trade_frequency       DOUBLE,
+    -- Format dimensions of this snapshot — let us mix formats in one table.
+    format_num_qbs        INTEGER,
+    format_ppr            DOUBLE,
+    format_num_teams      INTEGER,
+    format_is_dynasty     BOOLEAN,
+    raw                   JSON,
+    fetched_at            TIMESTAMP,
+    PRIMARY KEY (snapshot_date, fc_player_id, format_num_qbs, format_ppr,
+                 format_num_teams, format_is_dynasty)
+);
+
 CREATE TABLE IF NOT EXISTS players (
     player_id            VARCHAR PRIMARY KEY,
     full_name            VARCHAR,

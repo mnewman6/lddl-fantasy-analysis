@@ -51,10 +51,23 @@ def ingest(
 
 
 @app.command()
-def snapshot() -> None:
+def snapshot(
+    force: bool = typer.Option(
+        False, "--force", help="Refetch FantasyCalc even if today's snapshot exists."
+    ),
+) -> None:
     """Snapshot today's FantasyCalc dynasty values into the local store."""
-    rprint("[yellow]snapshot: not yet implemented (build step 3)[/yellow]")
-    raise typer.Exit(code=1)
+    from lddl.config import get_settings
+    from lddl.snapshot import take_snapshot
+
+    settings = get_settings()
+    if not settings.duckdb_path.exists():
+        rprint(
+            f"[red]No DuckDB file at {settings.duckdb_path}.[/red] "
+            "Run `lddl ingest` first so we can detect your league format."
+        )
+        raise typer.Exit(code=2)
+    take_snapshot(settings, force=force)
 
 
 @validate_app.command("ingest")

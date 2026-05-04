@@ -42,6 +42,18 @@ uv run lddl report league-state               # step 5+
 
 Run `uv run lddl snapshot` daily (cron or manually) to build a value-history archive — FantasyCalc values can only be collected going forward, not backfilled.
 
+### Daily snapshot via cron
+
+To snapshot every morning at 7am local:
+
+```bash
+crontab -e
+# add this line:
+0 7 * * * cd /Users/mattnewman/Desktop/Organized/Claude_Code_Projects/lddl-fantasy-analysis && /Users/mattnewman/.local/bin/uv run lddl snapshot >> data/snapshot.log 2>&1
+```
+
+`lddl snapshot` is idempotent for a given date — running it twice on the same day is a no-op (use `--force` to refetch).
+
 ## Build order
 
 1. Repo skeleton + CLI scaffold ✅
