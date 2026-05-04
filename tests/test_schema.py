@@ -21,6 +21,7 @@ EXPECTED_TABLES = {
     "drafts",
     "draft_picks",
     "draft_traded_picks",
+    "playoff_bracket",
     "players",
 }
 

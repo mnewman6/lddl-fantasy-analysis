@@ -609,50 +609,70 @@ def check_14_score_sanity(conn: duckdb.DuckDBPyConnection) -> CheckResult:
 @check(15, "matchups", "Playoff bracket presence")
 def check_15_playoff_bracket_presence(conn: duckdb.DuckDBPyConnection) -> CheckResult:
     R = _R(15, "matchups", "Playoff bracket presence")
-    has_bracket_table = conn.execute(
+    rows = conn.execute(
         """
-        SELECT COUNT(*) FROM information_schema.tables
-        WHERE table_schema='main'
-          AND table_name IN ('winners_bracket', 'losers_bracket')
+        SELECT l.season, l.status,
+               SUM(CASE WHEN pb.bracket = 'winners' THEN 1 ELSE 0 END) AS n_winners,
+               SUM(CASE WHEN pb.bracket = 'losers' THEN 1 ELSE 0 END) AS n_losers
+        FROM leagues l
+        LEFT JOIN playoff_bracket pb USING (league_id)
+        GROUP BY l.season, l.status
+        ORDER BY l.season
         """
-    ).fetchone()[0]
-    if has_bracket_table == 0:
+    ).fetchall()
+    missing = [r for r in rows if r[1] == "complete" and (r[2] == 0 or r[3] == 0)]
+    table = _md_table(
+        ["season", "status", "n_winners_games", "n_losers_games"],
+        [list(r) for r in rows],
+    )
+    if missing:
         return R(
             severity=Severity.RED,
-            summary="bracket data not ingested — /winners_bracket and /losers_bracket "
-            "endpoints are not yet pulled into the warehouse",
-            details_md=(
-                "Sleeper exposes:\n\n"
-                "- `GET /v1/league/{league_id}/winners_bracket`\n"
-                "- `GET /v1/league/{league_id}/losers_bracket`\n\n"
-                "Step 2 ingest does not currently fetch these. Adding them is a small "
-                "extension (one new table, one new ingest module).\n\n"
-                "Champion identification (check 16) depends on this."
-            ),
+            summary=f"{len(missing)} completed season(s) missing bracket data",
+            details_md=table,
         )
     return R(
         severity=Severity.GREEN,
-        summary="bracket tables exist (further check would verify per-season data)",
+        summary=f"every completed season has both winners and losers bracket data",
+        details_md=table,
     )
 
 
 @check(16, "matchups", "Champion identifiable")
 def check_16_champion_identifiable(conn: duckdb.DuckDBPyConnection) -> CheckResult:
     R = _R(16, "matchups", "Champion identifiable")
-    has_bracket_table = conn.execute(
+    rows = conn.execute(
         """
-        SELECT COUNT(*) FROM information_schema.tables
-        WHERE table_schema='main' AND table_name='winners_bracket'
+        SELECT l.season, l.status, pb.winner AS champion_roster_id,
+               lu.display_name AS champion_user
+        FROM leagues l
+        LEFT JOIN playoff_bracket pb
+            ON pb.league_id = l.league_id
+            AND pb.bracket = 'winners'
+            AND pb.placement = 1
+        LEFT JOIN rosters r
+            ON r.league_id = l.league_id AND r.roster_id = pb.winner
+        LEFT JOIN league_users lu
+            ON lu.league_id = l.league_id AND lu.user_id = r.owner_id
+        WHERE l.status = 'complete'
+        ORDER BY l.season
         """
-    ).fetchone()[0]
-    if has_bracket_table == 0:
+    ).fetchall()
+    missing = [r for r in rows if r[2] is None]
+    table = _md_table(
+        ["season", "status", "champion_roster_id", "champion_user"],
+        [list(r) for r in rows],
+    )
+    if missing:
         return R(
             severity=Severity.RED,
-            summary="cannot determine champions — depends on bracket ingestion (see check 15)",
+            summary=f"{len(missing)} completed season(s) have no identifiable champion",
+            details_md=table,
         )
     return R(
         severity=Severity.GREEN,
-        summary="champion identifiable for all completed seasons",
+        summary=f"champion identified for all {len(rows)} completed seasons",
+        details_md=table,
     )
 
 
@@ -796,7 +816,8 @@ def check_21_row_counts(conn: duckdb.DuckDBPyConnection) -> CheckResult:
     tables = [
         "leagues", "league_users", "managers", "rosters", "matchups",
         "transactions", "transaction_players", "transaction_picks",
-        "traded_picks", "drafts", "draft_picks", "draft_traded_picks", "players",
+        "traded_picks", "drafts", "draft_picks", "draft_traded_picks",
+        "playoff_bracket", "players",
     ]
     counts = []
     for t in tables:

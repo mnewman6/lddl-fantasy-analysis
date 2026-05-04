@@ -6,6 +6,7 @@ from rich.console import Console
 
 from lddl.clients.sleeper import SleeperClient
 from lddl.config import Settings
+from lddl.ingest.brackets import ingest_brackets
 from lddl.ingest.drafts import ingest_drafts
 from lddl.ingest.league_history import (
     ingest_rosters,
@@ -72,6 +73,7 @@ def run_ingest(
             n_drafts, n_dpicks, n_dtp = ingest_drafts(
                 client, conn, league_id, force=season_force
             )
+            n_wb, n_lb = ingest_brackets(client, conn, league_id, force=season_force)
 
             console.print(
                 f"    users={n_users}  rosters={n_rosters}  matchups={n_matchups}\n"
@@ -79,7 +81,8 @@ def run_ingest(
                 f"pick_moves={n_tx_pk})\n"
                 f"    outstanding_traded_picks={n_picks}\n"
                 f"    drafts={n_drafts}  draft_picks={n_dpicks}  "
-                f"draft_traded_picks={n_dtp}"
+                f"draft_traded_picks={n_dtp}\n"
+                f"    bracket: winners={n_wb}  losers={n_lb}"
             )
 
         console.print("\n[bold]rebuilding managers table[/bold]")

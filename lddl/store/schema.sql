@@ -164,6 +164,21 @@ CREATE TABLE IF NOT EXISTS draft_traded_picks (
     PRIMARY KEY (draft_id, season, round, roster_id)
 );
 
+CREATE TABLE IF NOT EXISTS playoff_bracket (
+    league_id     VARCHAR,
+    bracket       VARCHAR,    -- 'winners' or 'losers'
+    match_id      INTEGER,    -- 'm' from Sleeper
+    round         INTEGER,    -- 'r' from Sleeper
+    placement     INTEGER,    -- 'p' from Sleeper (null if not a placement game)
+    t1            INTEGER,    -- roster_id
+    t2            INTEGER,    -- roster_id
+    winner        INTEGER,    -- roster_id; null until game played
+    loser         INTEGER,    -- roster_id; null until game played
+    t1_from       JSON,       -- e.g. {"w": 3} or {"l": 4}
+    t2_from       JSON,
+    PRIMARY KEY (league_id, bracket, match_id)
+);
+
 CREATE TABLE IF NOT EXISTS players (
     player_id            VARCHAR PRIMARY KEY,
     full_name            VARCHAR,

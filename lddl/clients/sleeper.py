@@ -116,6 +116,24 @@ class SleeperClient:
             force=force,
         ) or []
 
+    def get_winners_bracket(
+        self, league_id: str, *, force: bool = False
+    ) -> list[dict[str, Any]]:
+        return self._cached_get(
+            f"/league/{league_id}/winners_bracket",
+            f"{league_id}/winners_bracket",
+            force=force,
+        ) or []
+
+    def get_losers_bracket(
+        self, league_id: str, *, force: bool = False
+    ) -> list[dict[str, Any]]:
+        return self._cached_get(
+            f"/league/{league_id}/losers_bracket",
+            f"{league_id}/losers_bracket",
+            force=force,
+        ) or []
+
     def get_traded_picks(
         self, league_id: str, *, force: bool = False
     ) -> list[dict[str, Any]]:
