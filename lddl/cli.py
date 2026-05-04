@@ -102,11 +102,31 @@ def report_trade_recap(
     season: int = typer.Option(..., "--season", help="Season year, e.g. 2024"),
 ) -> None:
     """Every trade from the given season, graded then and now."""
+    from lddl.analysis.trades import grade_trades_for_season
+    from lddl.config import get_settings
+    from lddl.reports.pdf import build_trade_recap
+    from lddl.store.db import connect
+
+    settings = get_settings()
+    if not settings.duckdb_path.exists():
+        rprint(
+            f"[red]No DuckDB file at {settings.duckdb_path}.[/red] "
+            "Run `lddl ingest` first."
+        )
+        raise typer.Exit(code=2)
+
+    with connect(settings.duckdb_path) as conn:
+        recap = grade_trades_for_season(conn, str(season))
+
+    if not recap.trades:
+        rprint(f"[yellow]No trades found for {season}.[/yellow]")
+        raise typer.Exit(code=0)
+
+    pdf_path = build_trade_recap(recap, settings.output_dir)
     rprint(
-        f"[yellow]report trade-recap --season {season}: "
-        "not yet implemented (build step 4)[/yellow]"
+        f"[green]Wrote {pdf_path}[/green] "
+        f"({len(recap.trades)} trades, {len(recap.trades)} chart PNGs)"
     )
-    raise typer.Exit(code=1)
 
 
 @report_app.command("manager-history")
