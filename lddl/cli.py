@@ -21,10 +21,26 @@ app.add_typer(report_app, name="report")
 
 
 @app.command()
-def ingest() -> None:
+def ingest(
+    force: bool = typer.Option(
+        False, "--force", help="Refetch every endpoint, ignoring on-disk caches."
+    ),
+    skip_players: bool = typer.Option(
+        False, "--skip-players", help="Skip the /players/nfl refresh."
+    ),
+) -> None:
     """Pull full league history from Sleeper into the local DuckDB store."""
-    rprint("[yellow]ingest: not yet implemented (build step 2)[/yellow]")
-    raise typer.Exit(code=1)
+    from lddl.config import get_settings
+    from lddl.ingest import run_ingest
+
+    settings = get_settings()
+    if not settings.sleeper_league_id:
+        rprint(
+            "[red]SLEEPER_LEAGUE_ID is not set.[/red] "
+            "Copy .env.example to .env and fill it in."
+        )
+        raise typer.Exit(code=2)
+    run_ingest(settings, force=force, skip_players=skip_players)
 
 
 @app.command()
