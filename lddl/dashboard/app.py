@@ -38,6 +38,11 @@ for key in ("SLEEPER_LEAGUE_ID", "LEAGUE_NAME"):
 from lddl.analysis.drafts import aggregate_by_manager, per_pick_grades  # noqa: E402,F401
 from lddl.analysis.franchises import canonical_user_id  # noqa: E402
 from lddl.analysis.managers import build_manager_cards  # noqa: E402
+from lddl.analysis.recommendations import (  # noqa: E402
+    classify_managers,
+    current_rosters,
+    recommend_trades,
+)
 from lddl.analysis.snapshots import latest_snapshot  # noqa: E402
 from lddl.analysis.trades import grade_trades_for_season  # noqa: E402
 from lddl.config import get_settings  # noqa: E402
@@ -908,6 +913,14 @@ def cached_top_assets_df(top_n: int = 50) -> pd.DataFrame:
     )
 
 
+@st.cache_data
+def cached_archetypes_and_rosters():
+    conn = get_conn()
+    rosters = current_rosters(conn)
+    archetypes = classify_managers(conn, rosters)
+    return archetypes, rosters
+
+
 # ---------- News ticker -----------------------------------------------------
 
 NEWS_HEADLINES: list[str] = [
@@ -1164,8 +1177,8 @@ render_news_ticker()
 
 # ---------- Tabs ------------------------------------------------------------
 
-overview, managers, trades, drafts, snapshots = st.tabs(
-    ["Overview", "Managers", "Trades", "Drafts", "Snapshots"]
+overview, managers, trades, trade_recs, drafts, snapshots = st.tabs(
+    ["Overview", "Managers", "Trades", "Trade Recs", "Drafts", "Snapshots"]
 )
 
 # ============================================================================
@@ -1547,6 +1560,136 @@ with trades:
                                 pd.DataFrame(rows), hide_index=True,
                                 use_container_width=True,
                             )
+
+# ============================================================================
+# TRADE RECOMMENDATIONS
+# ============================================================================
+
+with trade_recs:
+    archetypes, rosters_by_uid = cached_archetypes_and_rosters()
+
+    if not archetypes:
+        st.info(
+            "Run `lddl ingest` and `lddl snapshot` first — recommendations need both "
+            "current rosters and a FantasyCalc snapshot to score players."
+        )
+    else:
+        st.subheader("Team archetypes")
+        st.caption(
+            "Each manager is bucketed into Contender / Middler / Rebuilder using "
+            "value-weighted average roster age and last completed regular-season "
+            "record. Contenders are the league's older-and-winning teams; "
+            "rebuilders are the younger-and-losing ones."
+        )
+
+        archetype_order = {"Contender": 0, "Middler": 1, "Rebuilder": 2}
+        arch_df = pd.DataFrame([
+            {
+                "Manager": a.display_name,
+                "Archetype": a.archetype,
+                "Avg Age (wgtd)": round(a.avg_age_weighted, 1),
+                "Last Reg Record": f"{a.recent_wins}-{a.recent_losses}",
+                "Roster Value": int(a.total_roster_value),
+                "# Players (FC-ranked)": a.n_rostered,
+            }
+            for a in sorted(
+                archetypes.values(),
+                key=lambda x: (
+                    archetype_order.get(x.archetype, 99),
+                    -x.avg_age_weighted,
+                ),
+            )
+        ])
+        st.dataframe(
+            arch_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Roster Value": st.column_config.NumberColumn(format="%d"),
+            },
+        )
+
+        st.markdown("---")
+        st.subheader("Recommendation settings")
+        cols = st.columns(4)
+        young_max = cols[0].slider(
+            "Max age — 'young upside'", 22.0, 28.0, 25.0, step=0.5,
+            help="Contenders give players UNDER this age",
+        )
+        old_min = cols[1].slider(
+            "Min age — 'old vet'", 26.0, 32.0, 28.0, step=0.5,
+            help="Rebuilders give players AT or ABOVE this age",
+        )
+        min_val = cols[2].slider(
+            "Min asset value (FC)", 0, 5000, 1500, step=100,
+            help="Skip swaps where either side is worth less than this",
+        )
+        tol_pct = cols[3].slider(
+            "Balance tolerance (% diff)", 5, 50, 20, step=1,
+            help="Largest allowed value gap between the two sides",
+        )
+
+        recs = recommend_trades(
+            rosters_by_uid,
+            archetypes,
+            young_age_max=young_max,
+            old_age_min=old_min,
+            min_value=min_val,
+            balance_tolerance=tol_pct / 100.0,
+            max_recs=40,
+        )
+
+        st.markdown("---")
+        st.subheader(f"Recommendations · {len(recs)} balanced 1-for-1 swaps")
+        st.caption(
+            "Sorted by fit score (70% balance + 30% age gap). Each swap pairs a "
+            "rebuilder's older productive vet with a contender's younger upside "
+            "player at roughly equal FantasyCalc dynasty value. Picks aren't "
+            "modelled here — these are pure player swaps."
+        )
+
+        if not recs:
+            st.info(
+                "No swaps match the current settings. Try widening tolerance or "
+                "lowering the min asset value."
+            )
+        else:
+            def _asset_str(a) -> str:
+                age_s = f"{a.age:.1f}" if a.age is not None else "?"
+                return f"{a.name} ({a.position}, age {age_s}, {a.value:,})"
+
+            rec_rows = []
+            for r in recs:
+                rec_rows.append({
+                    "Fit": round(r.fit_score, 2),
+                    "Contender": r.contender_name,
+                    "Cont. gives": _asset_str(r.contender_gives),
+                    "Rebuilder": r.rebuilder_name,
+                    "Reb. gives": _asset_str(r.rebuilder_gives),
+                    "Δ value": r.value_diff,
+                    "Age gap": round(r.age_gap, 1),
+                })
+            st.dataframe(
+                pd.DataFrame(rec_rows),
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Fit": st.column_config.ProgressColumn(
+                        format="%.2f", min_value=0.0, max_value=1.0,
+                    ),
+                    "Δ value": st.column_config.NumberColumn(format="%+d"),
+                    "Age gap": st.column_config.NumberColumn(format="%+.1f"),
+                },
+            )
+
+        st.markdown("---")
+        st.caption(
+            "FantasyCalc values are crowdsourced approximations — these are "
+            "starting points for conversation, not authoritative offers. The "
+            "engine considers only currently-rostered, FC-ranked players; "
+            "picks, FAAB, and unranked depth pieces are excluded from v1."
+        )
+
 
 # ============================================================================
 # DRAFTS

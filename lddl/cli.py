@@ -70,6 +70,26 @@ def snapshot(
     take_snapshot(settings, force=force)
 
 
+@app.command("ktc-snapshot")
+def ktc_snapshot(
+    force: bool = typer.Option(
+        False, "--force", help="Refetch KTC even if today's snapshot exists."
+    ),
+) -> None:
+    """Snapshot today's KeepTradeCut dynasty values into the local store."""
+    from lddl.config import get_settings
+    from lddl.snapshot.ktc import take_ktc_snapshot
+
+    settings = get_settings()
+    if not settings.duckdb_path.exists():
+        rprint(
+            f"[red]No DuckDB file at {settings.duckdb_path}.[/red] "
+            "Run `lddl ingest` first so we can detect your league format."
+        )
+        raise typer.Exit(code=2)
+    take_ktc_snapshot(settings, force=force)
+
+
 @validate_app.command("ingest")
 def validate_ingest_cmd() -> None:
     """Run all 21 ingest data-quality checks against the local DuckDB store."""

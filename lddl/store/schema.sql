@@ -207,6 +207,42 @@ CREATE TABLE IF NOT EXISTS fc_snapshots (
                  format_num_teams, format_is_dynasty)
 );
 
+CREATE TABLE IF NOT EXISTS ktc_snapshots (
+    snapshot_date         DATE,
+    ktc_player_id         INTEGER,
+    sleeper_id            VARCHAR,    -- nullable; populated by mapper for human players
+    name                  VARCHAR,
+    position              VARCHAR,    -- 'QB','RB','WR','TE','RDP' (rookie draft pick)
+    team                  VARCHAR,
+    age                   DOUBLE,
+    value                 INTEGER,
+    overall_rank          INTEGER,
+    position_rank         INTEGER,
+    overall_trend_30d     INTEGER,
+    overall_trend_7d      INTEGER,
+    positional_trend_30d  INTEGER,
+    positional_trend_7d   INTEGER,
+    overall_tier          INTEGER,
+    positional_tier       INTEGER,
+    trade_count           INTEGER,
+    -- Format dimensions: KTC ships SF + 1QB nested per player, we pick the right
+    -- one based on detected league format. is_dynasty is always TRUE here today
+    -- (we only scrape /dynasty-rankings) but reserved for future redraft support.
+    format_num_qbs        INTEGER,
+    format_is_dynasty     BOOLEAN,
+    raw                   JSON,
+    fetched_at            TIMESTAMP,
+    PRIMARY KEY (snapshot_date, ktc_player_id, format_num_qbs, format_is_dynasty)
+);
+
+CREATE TABLE IF NOT EXISTS ktc_player_map (
+    ktc_player_id         INTEGER PRIMARY KEY,
+    sleeper_id            VARCHAR,
+    source                VARCHAR,    -- 'auto' or 'manual'
+    confidence            VARCHAR,    -- 'high' | 'medium' | 'low'
+    updated_at            TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS players (
     player_id            VARCHAR PRIMARY KEY,
     full_name            VARCHAR,
