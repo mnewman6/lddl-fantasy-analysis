@@ -65,17 +65,21 @@ def _styles() -> dict[str, ParagraphStyle]:
     }
 
 
-def _draw_footer(canvas, doc) -> None:
-    canvas.saveState()
-    canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(MUTED)
-    page_w, _ = LETTER
-    canvas.drawString(
-        PAGE_MARGIN, 0.4 * inch,
-        f"LDDL Manager History · Generated {datetime.now().strftime('%Y-%m-%d')}",
-    )
-    canvas.drawRightString(page_w - PAGE_MARGIN, 0.4 * inch, f"Page {doc.page}")
-    canvas.restoreState()
+def _make_footer(snapshot_date):
+    def _draw(canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(MUTED)
+        page_w, _ = LETTER
+        canvas.drawString(
+            PAGE_MARGIN, 0.4 * inch,
+            f"LDDL Manager History · "
+            f"Generated {datetime.now().strftime('%Y-%m-%d')} · "
+            f"Snapshot {snapshot_date.isoformat()}",
+        )
+        canvas.drawRightString(page_w - PAGE_MARGIN, 0.4 * inch, f"Page {doc.page}")
+        canvas.restoreState()
+    return _draw
 
 
 def _stat_block(label: str, value: str, styles) -> Table:
@@ -381,7 +385,8 @@ def build_manager_history(
         if i < len(cards) - 1:
             flow.append(PageBreak())
 
-    doc.build(flow, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+    footer = _make_footer(snapshot.snapshot_date)
+    doc.build(flow, onFirstPage=footer, onLaterPages=footer)
     return pdf_path
 
 

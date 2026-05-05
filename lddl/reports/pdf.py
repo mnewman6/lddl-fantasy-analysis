@@ -62,17 +62,21 @@ def _styles() -> dict[str, ParagraphStyle]:
     }
 
 
-def _draw_footer(canvas, doc) -> None:
-    canvas.saveState()
-    canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(MUTED)
-    page_w, _ = LETTER
-    canvas.drawString(
-        PAGE_MARGIN, 0.4 * inch,
-        f"Data: Sleeper + FantasyCalc · Generated {datetime.now().strftime('%Y-%m-%d')}",
-    )
-    canvas.drawRightString(page_w - PAGE_MARGIN, 0.4 * inch, f"Page {doc.page}")
-    canvas.restoreState()
+def _make_footer(snapshot_date):
+    def _draw(canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(MUTED)
+        page_w, _ = LETTER
+        canvas.drawString(
+            PAGE_MARGIN, 0.4 * inch,
+            f"Data: Sleeper + FantasyCalc · "
+            f"Generated {datetime.now().strftime('%Y-%m-%d')} · "
+            f"Snapshot {snapshot_date.isoformat()}",
+        )
+        canvas.drawRightString(page_w - PAGE_MARGIN, 0.4 * inch, f"Page {doc.page}")
+        canvas.restoreState()
+    return _draw
 
 
 def _summary_line(side: Side) -> str:
@@ -257,31 +261,21 @@ def build_trade_recap(
         styles["body"],
     ))
     flow.append(Spacer(1, 4))
+    flow.append(Paragraph("<b>Caveats — read these.</b>", styles["h3"]))
     flow.append(Paragraph(
-        "<b>Caveats — read these.</b>", styles["h3"]
-    ))
-    flow.append(Paragraph(
-        "FantasyCalc values are crowdsourced approximations. This grade is "
-        "<i>directional, not authoritative</i>.",
+        "FantasyCalc values are crowdsourced approximations. Grades are "
+        "<i>directional, not authoritative</i>. All values are at the current "
+        "snapshot, not at the trade date — as daily snapshots accumulate, "
+        "future versions of this report will include &ldquo;at trade,&rdquo; "
+        "&ldquo;6 months later,&rdquo; and &ldquo;1 year later&rdquo; columns.",
         styles["caveat"],
     ))
     flow.append(Paragraph(
-        "All values are at the current snapshot, not at the trade date. As "
-        "daily snapshots accumulate, future versions of this report will "
-        "include &ldquo;at trade,&rdquo; &ldquo;6 months later,&rdquo; and "
-        "&ldquo;1 year later&rdquo; columns.",
-        styles["caveat"],
-    ))
-    flow.append(Paragraph(
-        "Picks use FantasyCalc&rsquo;s round-bucket value (e.g. &ldquo;2026 "
-        "1st&rdquo;), not slot-specific (&ldquo;1.01&rdquo; vs &ldquo;1.12&rdquo;). "
-        "For un-traded picks of past drafts, FC has no current value — those "
-        "show as &mdash; and count as 0.",
-        styles["caveat"],
-    ))
-    flow.append(Paragraph(
-        "Players outside FantasyCalc&rsquo;s top ~440 dynasty rankings have "
-        "no value and count as 0.",
+        "Picks use FC&rsquo;s round-bucket value (e.g. &ldquo;2026 1st&rdquo;), "
+        "not slot-specific. Picks of past drafts and players outside the FC "
+        "top ~440 have no current value and count as 0 — this under-grades "
+        "trades whose assets are mostly old picks or marginal players (those "
+        "show as &mdash; in the tables).",
         styles["caveat"],
     ))
     flow.append(PageBreak())
@@ -291,5 +285,6 @@ def build_trade_recap(
         if i < n_traded:
             flow.append(PageBreak())
 
-    doc.build(flow, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+    footer = _make_footer(recap.snapshot_date)
+    doc.build(flow, onFirstPage=footer, onLaterPages=footer)
     return pdf_path
