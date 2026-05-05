@@ -9,8 +9,10 @@ DuckDB connection and analysis aggregations are shared across reruns.
 
 from __future__ import annotations
 
+import html
 import json
 import os
+import random
 
 import altair as alt
 import duckdb
@@ -225,6 +227,114 @@ with st.sidebar:
         "Trade and draft grades are *directional*, not authoritative."
     )
 
+# ---------- News ticker -----------------------------------------------------
+
+# V1 headlines. sleepthesenuts = always positive. Stephen Torterlo (bigtort) =
+# always negative. Everyone else gets the obscene treatment.
+NEWS_HEADLINES: list[str] = [
+    # sleepthesenuts — relentlessly positive
+    "sleepthesenuts named LDDL Manager of the Decade in unanimous panel vote",
+    "Hung Dynasty franchise valuation soars past $400M after another flawless waiver week",
+    "BREAKING: sleepthesenuts becomes first manager in league history to draft three first-round steals back-to-back-to-back",
+    "Local children name sleepthesenuts honorary godfather following yet another generous trade offer",
+    "Insiders confirm sleepthesenuts widely considered most handsome man in LDDL, possibly Western Hemisphere",
+    "sleepthesenuts releases inspirational memoir 'Hung Like a Champion' — debuts at #1 on NYT bestseller list",
+    "League office formally requests sleepthesenuts stop being so good 'for competitive balance reasons'",
+    "ESPN insider: sleepthesenuts'd lineup is 'the cleanest start/sit decision tree I have ever audited'",
+
+    # Stephen Torterlo (bigtort) — relentlessly negative
+    "Stephen Torterlo's lineup formally classified by NFL analysts as 'objectively unwatchable'",
+    "bigtort benched ALL TIME after forgetting login credentials for fourth straight Sunday",
+    "Sources: Stephen Torterlo's draft strategy is just clicking whichever name is highlighted",
+    "League office fines Stephen Torterlo undisclosed amount for 'aggressive mediocrity'",
+    "bigtort removed from group chats after openly admitting he 'doesn't really watch the games'",
+    "Stephen Torterlo's franchise dropped from power rankings after pollsters cite 'embarrassment factor'",
+    "Investigators link bigtort's start/sit decisions to mild seasonal depression in opposing managers forced to spectate",
+    "BREAKING: Stephen Torterlo trades RB1 for a kicker, claims he 'thought it was a package deal'",
+
+    # Everybody else — obscene-ish equal-opportunity slander
+    "Tony 'Two Trigs' Lasagne caught running illicit pasta-laundering operation through the waiver wire",
+    "tdeblis files trademark on 'Make America Trade Again' — receives cease and desist within 11 minutes",
+    "DeStarz manager spotted pacing CVS parking lot at 2am muttering about 'ceiling vs floor'",
+    "Sultans of Schlong owner gideontamir16 unveils new uniform: just a gym sock and a smile",
+    "Roster Gymnastics manager patd96 hospitalized after attempting to bench his own QB mid-snap",
+    "Smeisman Life: JN55 caught handing out homemade Heisman ballots at a Wendy's drive-thru",
+    "harold and kumar GM santoshmorasa adjourns trade negotiation for emergency White Castle run, deal collapses",
+    "Robin's dirty lil boy adamisraeli releases statement clarifying nickname 'is mostly metaphorical, allegedly'",
+    "The Shining Path's carricki officially classified by league office as 'simply a vibe'",
+    "Presti's Love Child manager jchiang17 demands paternity test — Sam Presti declines all comment",
+    "Jake&Meis owner jakesilverman1 caught FaceTiming opponent's wife during the Sunday early window",
+    "League-wide investigation opened after eight managers simultaneously claim 'my guy was supposed to be active'",
+    "Anonymous source: 'Half of these rosters look like they were drafted by raccoons.' League office: 'No comment.'",
+]
+
+
+def render_news_ticker() -> None:
+    """Render a continuously scrolling fake-news ticker across the page."""
+    rng = random.Random()
+    rng.shuffle(NEWS_HEADLINES)  # different order each rerun, same set
+    sep = "  ◆  "
+    safe = [html.escape(h) for h in NEWS_HEADLINES]
+    body = sep.join(safe) + sep
+    # Two copies in series → translate -50% loops seamlessly.
+    st.markdown(
+        f"""
+        <style>
+        .lddl-ticker {{
+            width: 100%;
+            overflow: hidden;
+            background: #000;
+            border-top: 1px solid #fff;
+            border-bottom: 1px solid #fff;
+            padding: 10px 0;
+            margin: 0 0 18px 0;
+            position: relative;
+        }}
+        .lddl-ticker::before {{
+            content: 'LDDL LIVE';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            padding: 0 14px;
+            background: #c0524a;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            font-weight: 900;
+            letter-spacing: 1px;
+            font-size: 14px;
+            z-index: 2;
+            box-shadow: 4px 0 10px rgba(0,0,0,0.6);
+        }}
+        .lddl-ticker-track {{
+            display: inline-block;
+            white-space: nowrap;
+            padding-left: 110px; /* clear the LIVE badge */
+            animation: lddl-ticker-scroll 240s linear infinite;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: 0.4px;
+        }}
+        .lddl-ticker:hover .lddl-ticker-track {{
+            animation-play-state: paused;
+        }}
+        @keyframes lddl-ticker-scroll {{
+            0%   {{ transform: translate3d(0, 0, 0); }}
+            100% {{ transform: translate3d(-50%, 0, 0); }}
+        }}
+        </style>
+        <div class="lddl-ticker">
+            <div class="lddl-ticker-track"><span>{body}</span><span>{body}</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ---------- Tabs ------------------------------------------------------------
 
 overview, managers, trades, drafts, snapshots = st.tabs(
@@ -234,6 +344,8 @@ overview, managers, trades, drafts, snapshots = st.tabs(
 # ---------- Overview --------------------------------------------------------
 
 with overview:
+    render_news_ticker()
+
     cards = cached_manager_cards()
     seasons = cached_seasons()
     trades_df = cached_all_trades_df()

@@ -7,6 +7,7 @@ import json
 import duckdb
 
 from lddl.analysis import AssetValue, SeasonRecap, Side, TradeGrade
+from lddl.analysis.draft_slots import SlotResolver
 from lddl.analysis.picks import pick_fc_name, pick_label
 from lddl.analysis.snapshots import (
     SnapshotRef,
@@ -80,6 +81,7 @@ def grade_trades_for_season(
         [league_id],
     ).fetchall()
 
+    slot_resolver = SlotResolver(conn)
     graded: list[TradeGrade] = []
     for tx_id, status_ts, created_ts, roster_ids_json, waiver_budget_json in trades:
         roster_ids = json.loads(roster_ids_json) if roster_ids_json else []
@@ -89,6 +91,7 @@ def grade_trades_for_season(
             _grade_one_trade(
                 conn,
                 snap,
+                slot_resolver,
                 league_id,
                 season,
                 tx_id,
@@ -110,6 +113,7 @@ def grade_trades_for_season(
 def _grade_one_trade(
     conn: duckdb.DuckDBPyConnection,
     snap: SnapshotRef,
+    slot_resolver: SlotResolver,
     league_id: str,
     season: str,
     tx_id: str,
@@ -169,11 +173,17 @@ def _grade_one_trade(
         """,
         [tx_id],
     ).fetchall():
-        fc_name = pick_fc_name(str(pick_season), round_)
+        slot = slot_resolver.slot_for(str(pick_season), round_, orig_roster)
+        fc_name = pick_fc_name(str(pick_season), round_, slot)
         value = value_by_name(conn, snap, fc_name)
+        # If slot-specific lookup misses, fall back to the round bucket so a
+        # known-slot pick still gets *some* value rather than None.
+        if value is None and slot is not None:
+            fallback_name = pick_fc_name(str(pick_season), round_)
+            value = value_by_name(conn, snap, fallback_name)
         if value is None:
             n_unranked += 1
-        label = pick_label(str(pick_season), round_, orig_roster)
+        label = pick_label(str(pick_season), round_, orig_roster, slot)
         asset = AssetValue(
             label=label,
             asset_type="pick",
