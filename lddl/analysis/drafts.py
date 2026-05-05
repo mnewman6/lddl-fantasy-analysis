@@ -1,8 +1,9 @@
 """Draft grade analysis.
 
 For each pick made in a 3-round rookie draft, compare the player's *current*
-FantasyCalc value to the league-wide median FC value at the same (round, slot).
-The startup 27-round 2023 draft is excluded — its slot semantics are different.
+value (KTC by default, FC if requested) to the league-wide median value at
+the same (round, slot). The startup 27-round 2023 draft is excluded — its
+slot semantics are different.
 """
 
 from __future__ import annotations
@@ -43,18 +44,21 @@ class ManagerDraftGrade:
 def per_pick_grades(
     conn: duckdb.DuckDBPyConnection, snapshot: SnapshotRef
 ) -> list[PickGrade]:
-    """Return one PickGrade per draft pick in 3-round rookie drafts."""
-    where, binds = snapshot.filter_clause("fc")
+    """Return one PickGrade per draft pick in 3-round rookie drafts.
+
+    Reads from the snapshot's source table (KTC or FC).
+    """
+    where, binds = snapshot.filter_clause("v")
     rows = conn.execute(
         f"""
         SELECT l.season, dp.round, dp.draft_slot, dp.picked_by, dp.player_id,
-               COALESCE(p.full_name, ''), COALESCE(fc.value, 0)
+               COALESCE(p.full_name, ''), COALESCE(v.value, 0)
         FROM draft_picks dp
         JOIN drafts d USING (draft_id)
         JOIN leagues l USING (league_id)
         LEFT JOIN players p ON dp.player_id = p.player_id
-        LEFT JOIN fc_snapshots fc
-            ON fc.sleeper_id = dp.player_id AND {where}
+        LEFT JOIN {snapshot.table} v
+            ON v.sleeper_id = dp.player_id AND {where}
         WHERE d.rounds = 3 AND d.status = 'complete'
         ORDER BY l.season, dp.pick_no
         """,

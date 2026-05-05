@@ -39,14 +39,37 @@ class KTCFormat:
 
 # Suffixes we strip when normalizing names.
 _NAME_SUFFIXES = re.compile(r"\b(?:jr|sr|ii|iii|iv|v)\.?\b", re.IGNORECASE)
+# Match initials joined by periods (e.g. "D.J." → "DJ"). Apply BEFORE the
+# generic punct stripper so we don't end up with "d j" (two tokens).
+_INITIALS = re.compile(r"\b([a-zA-Z])\.\s*([a-zA-Z])\.")
 _NAME_PUNCT = re.compile(r"[^\w\s]")
+
+# KTC and Sleeper occasionally disagree on team abbreviations. Map both sides
+# to a canonical code so team-tiebreaks don't miss real matches.
+_TEAM_ALIASES = {
+    "NEP": "NE", "JAC": "JAX", "LVR": "LV", "WSH": "WAS", "ARZ": "ARI",
+}
+
+
+def _norm_team(t: str | None) -> str:
+    if not t:
+        return ""
+    t = t.upper().strip()
+    return _TEAM_ALIASES.get(t, t)
 
 
 def _normalize_name(name: str) -> str:
     s = (name or "").lower()
+    s = _INITIALS.sub(lambda m: f"{m.group(1)}{m.group(2)}", s)
     s = _NAME_SUFFIXES.sub("", s)
     s = _NAME_PUNCT.sub(" ", s)
     return " ".join(s.split())
+
+
+def _last_name(norm: str) -> str:
+    """Last token of a normalized name (e.g. 'dj moore' → 'moore')."""
+    parts = norm.split()
+    return parts[-1] if parts else ""
 
 
 def _detect_format(conn: duckdb.DuckDBPyConnection) -> KTCFormat:
@@ -99,10 +122,11 @@ def _auto_map_to_sleeper(
     conn: duckdb.DuckDBPyConnection,
     snapshot_date: date,
     fmt: KTCFormat,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, list[tuple[int, str, str]]]:
     """Populate ktc_player_map + back-fill ktc_snapshots.sleeper_id.
 
-    Returns (n_high, n_medium, n_unmatched) over human players in this snapshot.
+    Returns (n_high, n_medium, n_low, unmatched_rows) over human players
+    in this snapshot.
     """
     # Pull KTC players from this snapshot we still need to map.
     ktc_players = conn.execute(
@@ -117,7 +141,7 @@ def _auto_map_to_sleeper(
         [snapshot_date, fmt.num_qbs, fmt.is_dynasty],
     ).fetchall()
 
-    # Build sleeper lookup: normalized full_name + position → list of player_ids.
+    # Build sleeper lookups against normalized name (full + last) and team.
     sleepers = conn.execute(
         """
         SELECT player_id, full_name, position, team
@@ -125,46 +149,60 @@ def _auto_map_to_sleeper(
         WHERE full_name IS NOT NULL
         """
     ).fetchall()
-    by_name_pos: dict[tuple[str, str], list[tuple[str, str | None]]] = {}
-    by_name: dict[str, list[tuple[str, str | None, str | None]]] = {}
+    by_name_pos: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    by_name: dict[str, list[tuple[str, str | None, str]]] = {}
+    by_lastname_pos: dict[tuple[str, str], list[tuple[str, str]]] = {}
     for pid, full_name, pos, team in sleepers:
         norm = _normalize_name(full_name)
         if not norm:
             continue
-        by_name_pos.setdefault((norm, pos or ""), []).append((pid, team))
-        by_name.setdefault(norm, []).append((pid, pos, team))
+        nteam = _norm_team(team)
+        by_name_pos.setdefault((norm, pos or ""), []).append((pid, nteam))
+        by_name.setdefault(norm, []).append((pid, pos, nteam))
+        ln = _last_name(norm)
+        if ln:
+            by_lastname_pos.setdefault((ln, pos or ""), []).append((pid, nteam))
 
     now = datetime.now(timezone.utc)
     high = 0
     medium = 0
+    low = 0
     unmatched: list[tuple[int, str, str]] = []
     map_rows: list[list] = []
 
     for ktc_id, name, pos, team in ktc_players:
         norm = _normalize_name(name)
+        nteam = _norm_team(team)
         sleeper_id: str | None = None
         confidence: str | None = None
 
-        # 1) exact name + position. If multiple matches, prefer same team.
+        # 1) exact normalized name + position. If multiple, tiebreak on team.
         cands = by_name_pos.get((norm, pos or ""), [])
         if len(cands) == 1:
             sleeper_id = cands[0][0]
             confidence = "high"
-        elif len(cands) > 1 and team:
-            same_team = [pid for pid, t in cands if (t or "").upper() == (team or "").upper()]
+        elif len(cands) > 1 and nteam:
+            same_team = [pid for pid, t in cands if t == nteam]
             if len(same_team) == 1:
                 sleeper_id = same_team[0]
                 confidence = "high"
-            else:
-                # ambiguous — fall through
-                pass
 
-        # 2) fallback: name-only unique match
+        # 2) name-only unique match (covers position oddities)
         if sleeper_id is None:
             name_cands = by_name.get(norm, [])
             if len(name_cands) == 1:
                 sleeper_id = name_cands[0][0]
                 confidence = "medium"
+
+        # 3) last-name + position + team fallback (covers nickname diffs:
+        #    Chig/Chigoziem, Bam/Zonovan, Gabe/Gabriel)
+        if sleeper_id is None and nteam:
+            ln = _last_name(norm)
+            ln_cands = by_lastname_pos.get((ln, pos or ""), [])
+            same_team = [pid for pid, t in ln_cands if t == nteam]
+            if len(same_team) == 1:
+                sleeper_id = same_team[0]
+                confidence = "low"
 
         if sleeper_id is None:
             unmatched.append((ktc_id, name, pos or ""))
@@ -172,8 +210,10 @@ def _auto_map_to_sleeper(
 
         if confidence == "high":
             high += 1
-        else:
+        elif confidence == "medium":
             medium += 1
+        else:
+            low += 1
         map_rows.append([ktc_id, sleeper_id, "auto", confidence, now])
 
     if map_rows:
@@ -197,7 +237,7 @@ def _auto_map_to_sleeper(
         """
     )
 
-    return high, medium, len(unmatched)
+    return high, medium, low, unmatched
 
 
 def take_ktc_snapshot(
@@ -267,16 +307,24 @@ def take_ktc_snapshot(
             f"({n_players} players, {n_picks} picks)"
         )
 
-        high, medium, unmatched = _auto_map_to_sleeper(conn, snapshot_date, fmt)
-        total_human = high + medium + unmatched
+        high, medium, low, unmatched = _auto_map_to_sleeper(
+            conn, snapshot_date, fmt
+        )
+        total_human = high + medium + low + len(unmatched)
         if total_human:
             console.print(
                 f"  Mapping → Sleeper: "
                 f"[green]{high} high[/green] · "
                 f"[yellow]{medium} medium[/yellow] · "
-                f"[red]{unmatched} unmatched[/red] "
+                f"[blue]{low} low[/blue] · "
+                f"[red]{len(unmatched)} unmatched[/red] "
                 f"(of {total_human} human players)"
             )
+            if unmatched:
+                console.print("  [red]Unmatched (likely rookies not in Sleeper "
+                              "yet, or true name diffs needing manual map):[/red]")
+                for ktc_id, name, pos in unmatched:
+                    console.print(f"    KTC #{ktc_id} · {name} ({pos})")
 
         _print_top_assets(console, conn, snapshot_date, fmt)
         return n_total

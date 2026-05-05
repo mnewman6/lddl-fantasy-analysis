@@ -137,11 +137,16 @@ def test_grade_trades_basic_swap(tmp_path: Path) -> None:
     assert len(t.sides) == 2
     side1 = next(s for s in t.sides if s.roster_id == 1)
     side2 = next(s for s in t.sides if s.roster_id == 2)
-    # Side 1 gave Test Player (5000), got 2026 1st (3275). Net = -1725.
+    # Side 1 gave Test Player (5000), got 2026 1st (3275). Raw net = -1725.
     assert side1.net_now() == -1725
     assert side2.net_now() == 1725
     assert t.winner.roster_id == 2
-    assert t.margin_now == 3450
+    # Raw margin (legacy sum-based, kept for transparency)
+    assert t.raw_margin_now == 3450
+    # Effective margin (KTC raw-adjusted) is smaller than the raw margin
+    # because the lower-value pick gets discounted relative to the stud.
+    assert 0 < t.margin_now < t.raw_margin_now
+    assert side1.effective_net < 0 < side2.effective_net
 
 
 def test_build_trade_recap_pdf(tmp_path: Path) -> None:

@@ -10,11 +10,22 @@ from lddl.analysis import AssetValue, SeasonRecap, Side, TradeGrade
 from lddl.analysis.draft_slots import SlotResolver
 from lddl.analysis.picks import pick_fc_name, pick_label
 from lddl.analysis.snapshots import (
+    DEFAULT_SOURCE,
+    Source,
     SnapshotRef,
     latest_snapshot,
     value_by_name,
     value_by_sleeper_id,
 )
+from lddl.analysis.trade_value import (
+    FC_MAX_VALUE,
+    KTC_MAX_VALUE,
+    effective_value,
+)
+
+
+def _max_value_for_source(source: Source) -> int:
+    return FC_MAX_VALUE if source == "fc" else KTC_MAX_VALUE
 
 
 def _resolve_manager(
@@ -50,11 +61,16 @@ def _player_label(
 
 
 def grade_trades_for_season(
-    conn: duckdb.DuckDBPyConnection, season: str
+    conn: duckdb.DuckDBPyConnection,
+    season: str,
+    source: Source = DEFAULT_SOURCE,
 ) -> SeasonRecap:
-    snap = latest_snapshot(conn)
+    snap = latest_snapshot(conn, source=source)
     if snap is None:
-        raise RuntimeError("No FantasyCalc snapshots in DB. Run `lddl snapshot` first.")
+        raise RuntimeError(
+            f"No {source.upper()} snapshots in DB. Run "
+            f"`lddl {'ktc-snapshot' if source == 'ktc' else 'snapshot'}` first."
+        )
 
     league = conn.execute(
         "SELECT league_id, name FROM leagues WHERE season = ? LIMIT 1",
@@ -203,6 +219,26 @@ def _grade_one_trade(
     has_assets = any(s.given or s.received for s in sides)
     is_faab_only = (not has_assets) and bool(waiver_budget)
 
+    # KTC raw-adjusted values: top value is across BOTH sides of the trade,
+    # so multi-asset sides get penalized correctly relative to a stud.
+    top_value = 0.0
+    for s in sides:
+        for a in s.given + s.received:
+            v = a.value_now or 0
+            if v > top_value:
+                top_value = float(v)
+    max_v = _max_value_for_source(snap.source)
+    if top_value > 0:
+        for s in sides:
+            s.effective_in = sum(
+                effective_value(a.value_now or 0, top_value, max_v)
+                for a in s.received
+            )
+            s.effective_out = sum(
+                effective_value(a.value_now or 0, top_value, max_v)
+                for a in s.given
+            )
+
     return TradeGrade(
         transaction_id=tx_id,
         season=season,
@@ -211,4 +247,5 @@ def _grade_one_trade(
         is_faab_only=is_faab_only,
         faab_movements=waiver_budget if is_faab_only else [],
         n_assets_unranked=n_unranked,
+        top_value_in_trade=top_value,
     )

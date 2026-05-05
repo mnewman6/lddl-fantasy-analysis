@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import os
 import random
 
@@ -43,7 +44,11 @@ from lddl.analysis.recommendations import (  # noqa: E402
     current_rosters,
     recommend_trades,
 )
-from lddl.analysis.snapshots import latest_snapshot  # noqa: E402
+from lddl.analysis.snapshots import (  # noqa: E402
+    DEFAULT_SOURCE,
+    Source,
+    latest_snapshot,
+)
 from lddl.analysis.trades import grade_trades_for_season  # noqa: E402
 from lddl.config import get_settings  # noqa: E402
 
@@ -632,6 +637,102 @@ html, body, [class*="css"], .stApp {
 .lddl-side .net.pos { color: var(--c-success); font-weight: 700; }
 .lddl-side .net.neg { color: var(--c-danger); font-weight: 700; }
 
+/* ==================== Power Rankings ==================== */
+.lddl-pr {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: linear-gradient(90deg, var(--c-surface) 0%, #131520 100%);
+    border: 1px solid var(--c-border);
+    border-left: 4px solid var(--accent, var(--c-orange));
+    border-radius: 14px;
+    padding: 14px 18px;
+    margin-bottom: 8px;
+    transition: transform 160ms, border-color 160ms;
+    position: relative;
+    overflow: hidden;
+}
+.lddl-pr:hover {
+    transform: translateX(2px);
+    border-color: var(--accent, var(--c-orange));
+}
+.lddl-pr .rank {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 44px;
+    line-height: 1;
+    color: var(--accent, var(--c-orange));
+    min-width: 56px;
+    text-align: center;
+    text-shadow: 0 0 20px color-mix(in srgb, var(--accent, var(--c-orange)) 50%, transparent);
+}
+.lddl-pr .av {
+    width: 44px; height: 44px;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--accent, var(--c-orange));
+    color: #0E0F13;
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 22px;
+    flex-shrink: 0;
+}
+.lddl-pr .info {
+    flex: 1;
+    min-width: 0;
+}
+.lddl-pr .name {
+    font-family: 'Oswald', sans-serif;
+    font-weight: 700;
+    color: var(--c-text);
+    font-size: 18px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    line-height: 1.1;
+}
+.lddl-pr .breakdown {
+    display: flex;
+    gap: 14px;
+    color: var(--c-muted);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+.lddl-pr .breakdown b {
+    color: var(--c-text);
+    font-weight: 600;
+}
+.lddl-pr .total {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 38px;
+    color: var(--c-text);
+    line-height: 1;
+    margin-left: auto;
+    text-align: right;
+}
+.lddl-pr .total .lbl {
+    display: block;
+    font-family: 'Oswald', sans-serif;
+    font-size: 9px;
+    color: var(--c-muted);
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin-top: 4px;
+    font-weight: 600;
+}
+.lddl-pr .top3 {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    color: var(--c-muted);
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    border-left: 1px solid var(--c-border);
+    padding-left: 14px;
+    margin-left: 4px;
+    min-width: 200px;
+}
+.lddl-pr .top3 .pl b { color: var(--c-text); font-weight: 600; }
+
 /* ==================== News ticker ==================== */
 .lddl-ticker {
     width: 100%;
@@ -792,17 +893,28 @@ def cached_league_meta() -> dict:
 
 
 @st.cache_data
-def cached_snapshot_summary() -> dict:
+def cached_snapshot_summary(source: Source = DEFAULT_SOURCE) -> dict:
     conn = get_conn()
-    row = conn.execute(
-        """
-        SELECT MAX(snapshot_date), COUNT(DISTINCT snapshot_date),
-               COUNT(*) FILTER (WHERE position != 'PICK'),
-               COUNT(*) FILTER (WHERE position = 'PICK')
-        FROM fc_snapshots
-        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM fc_snapshots)
-        """
-    ).fetchone()
+    if source == "ktc":
+        row = conn.execute(
+            """
+            SELECT MAX(snapshot_date), COUNT(DISTINCT snapshot_date),
+                   COUNT(*) FILTER (WHERE position != 'RDP'),
+                   COUNT(*) FILTER (WHERE position = 'RDP')
+            FROM ktc_snapshots
+            WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM ktc_snapshots)
+            """
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT MAX(snapshot_date), COUNT(DISTINCT snapshot_date),
+                   COUNT(*) FILTER (WHERE position != 'PICK'),
+                   COUNT(*) FILTER (WHERE position = 'PICK')
+            FROM fc_snapshots
+            WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM fc_snapshots)
+            """
+        ).fetchone()
     if not row or row[0] is None:
         return {}
     return {
@@ -810,29 +922,30 @@ def cached_snapshot_summary() -> dict:
         "n_dates": row[1],
         "n_players_in_latest": row[2],
         "n_picks_in_latest": row[3],
+        "source": source,
     }
 
 
 @st.cache_data
-def cached_manager_cards():
+def cached_manager_cards(source: Source = DEFAULT_SOURCE):
     conn = get_conn()
-    return build_manager_cards(conn)
+    return build_manager_cards(conn, source=source)
 
 
 @st.cache_data
-def cached_trade_recap(season: str):
+def cached_trade_recap(season: str, source: Source = DEFAULT_SOURCE):
     conn = get_conn()
-    return grade_trades_for_season(conn, season)
+    return grade_trades_for_season(conn, season, source=source)
 
 
 @st.cache_data
-def cached_all_trades_df() -> pd.DataFrame:
+def cached_all_trades_df(source: Source = DEFAULT_SOURCE) -> pd.DataFrame:
     """Flatten every season's trades into one dataframe (one row per side per trade)."""
-    cards = cached_manager_cards()
+    cards = cached_manager_cards(source)
     uid_to_franchise = {c.user_id: c.display_name for c in cards}
     rows = []
     for season in cached_seasons():
-        recap = cached_trade_recap(season)
+        recap = cached_trade_recap(season, source)
         for trade in recap.trades:
             for side in trade.sides:
                 canonical_uid = canonical_user_id(side.user_id)
@@ -850,6 +963,9 @@ def cached_all_trades_df() -> pd.DataFrame:
                     "value_in": side.value_in_now(),
                     "value_out": side.value_out_now(),
                     "net": side.net_now(),
+                    # Effective (KTC-raw-adjusted) net — discounts the
+                    # multi-asset side, rewards the single-stud side.
+                    "eff_net": int(round(side.effective_net)),
                     "n_given": len(side.given),
                     "n_received": len(side.received),
                 })
@@ -860,13 +976,13 @@ def cached_all_trades_df() -> pd.DataFrame:
 
 
 @st.cache_data
-def cached_pick_grades_df() -> pd.DataFrame:
+def cached_pick_grades_df(source: Source = DEFAULT_SOURCE) -> pd.DataFrame:
     conn = get_conn()
-    snap = latest_snapshot(conn)
+    snap = latest_snapshot(conn, source=source)
     if snap is None:
         return pd.DataFrame()
     grades = per_pick_grades(conn, snap)
-    cards = build_manager_cards(conn)
+    cards = build_manager_cards(conn, source=source)
     uid_to_franchise_name = {c.user_id: c.display_name for c in cards}
     rows = []
     for g in grades:
@@ -891,19 +1007,40 @@ def cached_pick_grades_df() -> pd.DataFrame:
 
 
 @st.cache_data
-def cached_top_assets_df(top_n: int = 50) -> pd.DataFrame:
+def cached_top_assets_df(
+    top_n: int = 50, source: Source = DEFAULT_SOURCE
+) -> pd.DataFrame:
+    """Return the top-N assets from the latest snapshot for the given source.
+
+    Output columns are normalized so the dashboard can render either source
+    with the same code: name, position, team, age, value, overall_rank,
+    position_rank, trend_30d, tier, snapshot_date.
+    """
     conn = get_conn()
-    rows = conn.execute(
-        """
-        SELECT name, position, team, age, value, overall_rank, position_rank,
-               trend_30_day, tier, snapshot_date
-        FROM fc_snapshots
-        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM fc_snapshots)
-        ORDER BY value DESC
-        LIMIT ?
-        """,
-        [top_n],
-    ).fetchall()
+    if source == "ktc":
+        rows = conn.execute(
+            """
+            SELECT name, position, team, age, value, overall_rank, position_rank,
+                   overall_trend_30d, overall_tier, snapshot_date
+            FROM ktc_snapshots
+            WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM ktc_snapshots)
+            ORDER BY value DESC
+            LIMIT ?
+            """,
+            [top_n],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT name, position, team, age, value, overall_rank, position_rank,
+                   trend_30_day, tier, snapshot_date
+            FROM fc_snapshots
+            WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM fc_snapshots)
+            ORDER BY value DESC
+            LIMIT ?
+            """,
+            [top_n],
+        ).fetchall()
     return pd.DataFrame(
         rows,
         columns=[
@@ -911,6 +1048,95 @@ def cached_top_assets_df(top_n: int = 50) -> pd.DataFrame:
             "position_rank", "trend_30d", "tier", "snapshot_date",
         ],
     )
+
+
+@st.cache_data
+def cached_power_rankings(source: Source = DEFAULT_SOURCE) -> pd.DataFrame:
+    """Sum each franchise's current-season player roster value at this source.
+
+    Returns one row per franchise with: rank, user_id, franchise (display),
+    total_value, n_players, mapped_pct, and per-position sums (qb/rb/wr/te).
+    """
+    conn = get_conn()
+    snap = latest_snapshot(conn, source=source)
+    if snap is None:
+        return pd.DataFrame()
+    where, binds = snap.filter_clause()
+
+    # Build a {sleeper_id: (value, position, name)} lookup for the snapshot.
+    val_rows = conn.execute(
+        f"SELECT sleeper_id, value, position, name FROM {snap.table} "
+        f"WHERE {where} AND sleeper_id IS NOT NULL",
+        binds,
+    ).fetchall()
+    val_lookup: dict[str, tuple[int, str, str]] = {
+        sid: (int(v or 0), pos or "?", name or "")
+        for sid, v, pos, name in val_rows
+    }
+
+    # Pull current rosters from the most-recent league.
+    roster_rows = conn.execute(
+        """
+        SELECT r.owner_id, r.players
+        FROM rosters r JOIN leagues l USING (league_id)
+        WHERE l.season = (SELECT MAX(season) FROM leagues)
+          AND r.owner_id IS NOT NULL
+        """
+    ).fetchall()
+
+    # Franchise display-name lookup (canonical → most-recent display name).
+    cards = build_manager_cards(conn, source=source)
+    uid_to_name = {c.user_id: c.display_name for c in cards}
+
+    out: list[dict] = []
+    for owner_id, players_json in roster_rows:
+        canonical = canonical_user_id(owner_id)
+        if canonical is None:
+            continue
+        try:
+            player_ids = json.loads(players_json) if players_json else []
+        except (TypeError, json.JSONDecodeError):
+            player_ids = []
+
+        per_pos = {"QB": 0, "RB": 0, "WR": 0, "TE": 0}
+        total = 0
+        n_players = 0
+        n_mapped = 0
+        top: list[tuple[int, str, str]] = []  # (value, name, pos)
+        for pid in player_ids:
+            if pid is None:
+                continue
+            n_players += 1
+            v = val_lookup.get(str(pid))
+            if v is None:
+                continue
+            n_mapped += 1
+            value, pos, name = v
+            total += value
+            if pos in per_pos:
+                per_pos[pos] += value
+            top.append((value, name, pos))
+        top.sort(reverse=True)
+
+        out.append({
+            "user_id": canonical,
+            "franchise": uid_to_name.get(canonical, canonical),
+            "total_value": total,
+            "n_players": n_players,
+            "n_mapped": n_mapped,
+            "qb": per_pos["QB"],
+            "rb": per_pos["RB"],
+            "wr": per_pos["WR"],
+            "te": per_pos["TE"],
+            "top3": top[:3],
+        })
+
+    df = pd.DataFrame(out)
+    if df.empty:
+        return df
+    df = df.sort_values("total_value", ascending=False).reset_index(drop=True)
+    df.insert(0, "rank", df.index + 1)
+    return df
 
 
 @st.cache_data
@@ -983,7 +1209,10 @@ def section_header(title: str, subtitle: str | None = None) -> None:
     )
 
 
-def render_hero(meta: dict, snap: dict, n_managers: int, n_seasons: int) -> None:
+def render_hero(
+    meta: dict, snap: dict, n_managers: int, n_seasons: int,
+    *, source: Source = DEFAULT_SOURCE,
+) -> None:
     league_name = (meta.get("name") or "LDDL") if meta else "LDDL"
     season = str(meta.get("season", "—")) if meta else "—"
     status = str(meta.get("status", "—")) if meta else "—"
@@ -993,6 +1222,7 @@ def render_hero(meta: dict, snap: dict, n_managers: int, n_seasons: int) -> None
     )
     n_dates = snap.get("n_dates", 0) if snap else 0
     n_players = snap.get("n_players_in_latest", 0) if snap else 0
+    source_label = "KTC" if source == "ktc" else "FC"
 
     st.markdown(
         _h(f"""
@@ -1013,9 +1243,9 @@ def render_hero(meta: dict, snap: dict, n_managers: int, n_seasons: int) -> None
               <span class="val">{n_managers}</span>
               <span style="color:#8C92A4;font-size:10px;margin-left:6px;">{n_seasons} seasons</span>
             </div>
-            <div class="chip"><span class="lbl">Snapshot</span>
-              <span class="val">{html.escape(snap_date)}</span>
-              <span style="color:#8C92A4;font-size:10px;margin-left:6px;">{n_dates}d · {n_players} players</span>
+            <div class="chip"><span class="lbl">Source</span>
+              <span class="val">{source_label}</span>
+              <span style="color:#8C92A4;font-size:10px;margin-left:6px;">{html.escape(snap_date)} · {n_dates}d · {n_players} players</span>
             </div>
           </div>
         </div>
@@ -1147,7 +1377,8 @@ def render_footer() -> None:
 # ---------- Sidebar (slim) --------------------------------------------------
 
 meta = cached_league_meta()
-snap = cached_snapshot_summary()
+SOURCE_LABELS = {"ktc": "KeepTradeCut", "fc": "FantasyCalc"}
+
 with st.sidebar:
     st.markdown("### 🏈 LDDL")
     if meta:
@@ -1155,30 +1386,53 @@ with st.sidebar:
             f"**{meta.get('name', 'LDDL')}**  \n"
             f"Season {meta.get('season')} · {meta.get('status')}"
         )
-    if snap:
-        st.markdown(
-            f"**Snapshot:** {snap['latest_date']}  \n"
-            f"{snap['n_dates']}d FC history  \n"
-            f"{snap['n_players_in_latest']} players · {snap['n_picks_in_latest']} picks"
+    st.markdown("---")
+    st.markdown("**Value source**")
+    source_choice = st.radio(
+        "Value source",
+        options=["ktc", "fc"],
+        format_func=lambda s: SOURCE_LABELS[s],
+        index=0,
+        key="source",
+        label_visibility="collapsed",
+        help="KTC = KeepTradeCut (preferred). FC = FantasyCalc (fallback).",
+    )
+    snap_summary = cached_snapshot_summary(source_choice)
+    if snap_summary:
+        st.caption(
+            f"**{SOURCE_LABELS[source_choice]} snapshot**  \n"
+            f"{snap_summary['latest_date']}  \n"
+            f"{snap_summary['n_dates']}d history · "
+            f"{snap_summary['n_players_in_latest']} players · "
+            f"{snap_summary['n_picks_in_latest']} picks"
         )
     else:
-        st.warning("No FC snapshots yet. Run `lddl snapshot`.")
+        st.warning(
+            f"No {SOURCE_LABELS[source_choice]} snapshots yet. Run "
+            f"`lddl {'ktc-snapshot' if source_choice == 'ktc' else 'snapshot'}`."
+        )
+    st.markdown("---")
     st.caption(
-        "FantasyCalc values are crowdsourced approximations. "
+        "Values are crowdsourced approximations. "
         "Trade and draft grades are directional, not authoritative."
     )
 
+# `source` is the active source for every cached_* call below.
+source: Source = source_choice
+snap = cached_snapshot_summary(source)
+
 # ---------- Hero + ticker (above tabs) --------------------------------------
 
-cards_all = cached_manager_cards()
+cards_all = cached_manager_cards(source)
 seasons_all = cached_seasons()
-render_hero(meta, snap, len(cards_all), len(seasons_all))
+render_hero(meta, snap, len(cards_all), len(seasons_all), source=source)
 render_news_ticker()
 
 # ---------- Tabs ------------------------------------------------------------
 
-overview, managers, trades, trade_recs, drafts, snapshots = st.tabs(
-    ["Overview", "Managers", "Trades", "Trade Recs", "Drafts", "Snapshots"]
+overview, power, managers, trades, trade_recs, drafts, snapshots = st.tabs(
+    ["Overview", "Power Rankings", "Managers", "Trades", "Trade Recs",
+     "Drafts", "Snapshots"]
 )
 
 # ============================================================================
@@ -1186,9 +1440,9 @@ overview, managers, trades, trade_recs, drafts, snapshots = st.tabs(
 # ============================================================================
 
 with overview:
-    cards = cached_manager_cards()
+    cards = cached_manager_cards(source)
     seasons = cached_seasons()
-    trades_df = cached_all_trades_df()
+    trades_df = cached_all_trades_df(source)
 
     n_trades = (
         trades_df[trades_df["is_faab_only"] == False]
@@ -1320,11 +1574,119 @@ with overview:
         st.markdown("".join(items), unsafe_allow_html=True)
 
 # ============================================================================
+# POWER RANKINGS
+# ============================================================================
+
+with power:
+    pr_df = cached_power_rankings(source)
+    if pr_df.empty:
+        st.info(
+            f"No {SOURCE_LABELS[source]} snapshot or no current rosters yet. "
+            f"Run `lddl {'ktc-snapshot' if source == 'ktc' else 'snapshot'}` "
+            "(and `lddl ingest` for the current season)."
+        )
+    else:
+        section_header(
+            "Power Rankings",
+            subtitle=(
+                f"{SOURCE_LABELS[source]} · current rosters · "
+                f"{int(pr_df['n_players'].sum())} players summed"
+            ),
+        )
+
+        cols = st.columns(4)
+        cols[0].metric("Top franchise", pr_df.iloc[0]["franchise"])
+        cols[1].metric("Top value", f"{int(pr_df.iloc[0]['total_value']):,}")
+        cols[2].metric("Bottom franchise", pr_df.iloc[-1]["franchise"])
+        cols[3].metric(
+            "Top → bottom gap",
+            f"{int(pr_df.iloc[0]['total_value'] - pr_df.iloc[-1]['total_value']):,}",
+        )
+
+        items = []
+        for _, r in pr_df.iterrows():
+            accent = accent_for(r["franchise"])
+            top3_html = ""
+            if r["top3"]:
+                top3_lines = []
+                for value, name, pos in r["top3"]:
+                    top3_lines.append(
+                        f'<div class="pl"><b>{html.escape(name)}</b> '
+                        f'<span style="opacity:0.7;">{html.escape(pos)}</span> '
+                        f'<span style="color:#FF6A1A;float:right;">'
+                        f'{value:,}</span></div>'
+                    )
+                top3_html = (
+                    '<div class="top3">' + "".join(top3_lines) + "</div>"
+                )
+            mapped_pct = (
+                int(round(100 * r["n_mapped"] / r["n_players"]))
+                if r["n_players"] else 0
+            )
+            items.append(_h(f"""
+            <div class="lddl-pr" style="--accent: {accent};">
+              <div class="rank">#{int(r['rank'])}</div>
+              <div class="av">{html.escape(initials(r['franchise']))}</div>
+              <div class="info">
+                <div class="name">{html.escape(r['franchise'])}</div>
+                <div class="breakdown">
+                  <span>QB <b>{int(r['qb']):,}</b></span>
+                  <span>RB <b>{int(r['rb']):,}</b></span>
+                  <span>WR <b>{int(r['wr']):,}</b></span>
+                  <span>TE <b>{int(r['te']):,}</b></span>
+                  <span style="opacity:0.6;">{int(r['n_players'])} rostered · {mapped_pct}% valued</span>
+                </div>
+              </div>
+              {top3_html}
+              <div class="total">{int(r['total_value']):,}<span class="lbl">Total Value</span></div>
+            </div>
+            """))
+        st.markdown("".join(items), unsafe_allow_html=True)
+
+        section_header("Roster value by franchise", subtitle="Bar chart")
+        bar_df = pr_df[["franchise", "total_value"]].copy()
+        bar = alt.Chart(bar_df).mark_bar(cornerRadius=4).encode(
+            x=alt.X("total_value:Q", title="Total roster value"),
+            y=alt.Y("franchise:N", sort="-x", title=None),
+            color=alt.value(PALETTE["orange"]),
+            tooltip=["franchise", "total_value"],
+        ).properties(height=24 * len(bar_df) + 40)
+        st.altair_chart(bar, use_container_width=True)
+
+        section_header("Position breakdown", subtitle="Stacked")
+        long_df = pr_df.melt(
+            id_vars=["franchise", "rank"],
+            value_vars=["qb", "rb", "wr", "te"],
+            var_name="position", value_name="value",
+        )
+        long_df["position"] = long_df["position"].str.upper()
+        stack = alt.Chart(long_df).mark_bar().encode(
+            x=alt.X("value:Q", stack="zero", title="Value by position"),
+            y=alt.Y(
+                "franchise:N",
+                sort=alt.EncodingSortField(field="rank", op="min"),
+                title=None,
+            ),
+            color=alt.Color(
+                "position:N",
+                scale=alt.Scale(
+                    domain=["QB", "RB", "WR", "TE"],
+                    range=[
+                        PALETTE["orange"], PALETTE["cyan"],
+                        PALETTE["purple"], PALETTE["gold"],
+                    ],
+                ),
+            ),
+            tooltip=["franchise", "position", "value"],
+        ).properties(height=24 * len(pr_df) + 40)
+        st.altair_chart(stack, use_container_width=True)
+
+# ============================================================================
 # MANAGERS
 # ============================================================================
 
 with managers:
-    cards = cached_manager_cards()
+    cards = cached_manager_cards(source)
     name_to_card = {c.display_name: c for c in cards}
     sel = st.selectbox("Select franchise", list(name_to_card.keys()))
     c = name_to_card[sel]
@@ -1405,7 +1767,7 @@ with managers:
 
 with trades:
     seasons = cached_seasons()
-    df = cached_all_trades_df()
+    df = cached_all_trades_df(source)
 
     if df.empty:
         st.info("No trades graded yet.")
@@ -1452,7 +1814,8 @@ with trades:
             sorted_view[
                 [
                     "trade_date", "season", "n_parties", "manager",
-                    "value_in", "value_out", "net", "transaction_id",
+                    "value_in", "value_out", "eff_net", "net",
+                    "transaction_id",
                 ]
             ],
             hide_index=True,
@@ -1469,7 +1832,14 @@ with trades:
                 "manager": st.column_config.TextColumn("Manager"),
                 "value_in": st.column_config.NumberColumn("In", format="%d"),
                 "value_out": st.column_config.NumberColumn("Out", format="%d"),
-                "net": st.column_config.NumberColumn("Net Δ", format="%+d"),
+                "eff_net": st.column_config.NumberColumn(
+                    "Net Δ (eff)", format="%+d",
+                    help="KTC raw-adjusted: 2-for-1 discount + best-player premium baked in",
+                ),
+                "net": st.column_config.NumberColumn(
+                    "Raw Δ", format="%+d",
+                    help="Naive sum (no 2-for-1 discount) — kept for transparency",
+                ),
             },
             height=420,
         )
@@ -1503,7 +1873,7 @@ with trades:
                 subtitle=f"{sel_date} · {sel_season} · {sel_parties}",
             )
 
-            recap = cached_trade_recap(sel_season)
+            recap = cached_trade_recap(sel_season, source)
             tg = next(
                 (x for x in recap.trades if x.transaction_id == selected_tx),
                 None,
@@ -1521,15 +1891,17 @@ with trades:
                 cols = st.columns(len(tg.sides))
                 for col, side in zip(cols, tg.sides):
                     accent = accent_for(side.display_name)
-                    net = side.net_now()
-                    net_cls = "pos" if net > 0 else ("neg" if net < 0 else "")
+                    eff_net = int(round(side.effective_net))
+                    raw_net = side.net_now()
+                    net_cls = "pos" if eff_net > 0 else ("neg" if eff_net < 0 else "")
                     with col:
                         st.markdown(
                             _h(f"""
                             <div class="lddl-side" style="--accent: {accent};">
                               <div class="h">{html.escape(side.display_name)}</div>
                               <div class="sub">Roster {side.roster_id} · in {side.value_in_now():,} · out {side.value_out_now():,}</div>
-                              <div class="net {net_cls}" style="font-family: 'Bebas Neue', sans-serif; font-size: 30px; line-height: 1; margin-bottom: 8px;">{net:+,}</div>
+                              <div class="net {net_cls}" style="font-family: 'Bebas Neue', sans-serif; font-size: 30px; line-height: 1; margin-bottom: 4px;">{eff_net:+,}</div>
+                              <div class="sub" style="font-size: 11px; opacity: 0.7;">eff · raw {raw_net:+,}</div>
                             </div>
                             """),
                             unsafe_allow_html=True,
@@ -1556,20 +1928,24 @@ with trades:
             graded = view[view["is_faab_only"] == False]
             if not graded.empty:
                 section_header(
-                    "Trade-value leaderboard", subtitle="(respects filters)"
+                    "Trade-value leaderboard",
+                    subtitle="effective Δ (KTC raw-adjusted) · respects filters",
                 )
                 wins_per_tx = (
-                    graded.groupby("transaction_id")["net"]
-                    .max().reset_index().rename(columns={"net": "best_net"})
+                    graded.groupby("transaction_id")["eff_net"]
+                    .max().reset_index().rename(columns={"eff_net": "best_eff_net"})
                 )
                 graded = graded.merge(wins_per_tx, on="transaction_id", how="left")
-                graded["won"] = (graded["net"] == graded["best_net"]) & (graded["best_net"] > 0)
+                graded["won"] = (
+                    (graded["eff_net"] == graded["best_eff_net"])
+                    & (graded["best_eff_net"] > 0)
+                )
                 leaderboard = (
                     graded.groupby("franchise")
                     .agg(
                         n_trades=("transaction_id", "nunique"),
-                        total_delta=("net", "sum"),
-                        avg_delta=("net", "mean"),
+                        total_delta=("eff_net", "sum"),
+                        avg_delta=("eff_net", "mean"),
                         win_rate=("won", "mean"),
                     )
                     .reset_index()
@@ -1708,15 +2084,21 @@ with trade_recs:
                 age_s = f"{a.age:.1f}" if a.age is not None else "?"
                 return f"{a.name} ({a.position}, age {age_s}, {a.value:,})"
 
+            def _bundle_str(bundle) -> str:
+                return " + ".join(_asset_str(a) for a in bundle)
+
             rec_rows = []
             for r in recs:
+                shape = f"{len(r.contender_gives)}-for-{len(r.rebuilder_gives)}"
                 rec_rows.append({
                     "Fit": round(r.fit_score, 2),
+                    "Shape": shape,
                     "Contender": r.contender_name,
-                    "Cont. gives": _asset_str(r.contender_gives),
+                    "Cont. gives": _bundle_str(r.contender_gives),
                     "Rebuilder": r.rebuilder_name,
-                    "Reb. gives": _asset_str(r.rebuilder_gives),
-                    "Δ value": r.value_diff,
+                    "Reb. gives": _bundle_str(r.rebuilder_gives),
+                    "Eff Δ": round(r.effective_value_diff, 0),
+                    "Raw Δ": r.raw_value_diff,
                     "Age gap": round(r.age_gap, 1),
                 })
             st.dataframe(
@@ -1727,7 +2109,17 @@ with trade_recs:
                     "Fit": st.column_config.ProgressColumn(
                         format="%.2f", min_value=0.0, max_value=1.0,
                     ),
-                    "Δ value": st.column_config.NumberColumn(format="%+d"),
+                    "Shape": st.column_config.TextColumn(
+                        help="contender-gives count vs rebuilder-gives count"
+                    ),
+                    "Eff Δ": st.column_config.NumberColumn(
+                        format="%+d",
+                        help="KTC-raw-adjusted balance (closer to 0 = fairer)",
+                    ),
+                    "Raw Δ": st.column_config.NumberColumn(
+                        format="%+d",
+                        help="Naive sum difference (no 2-for-1 discount)",
+                    ),
                     "Age gap": st.column_config.NumberColumn(format="%+.1f"),
                 },
             )
@@ -1746,7 +2138,7 @@ with trade_recs:
 # ============================================================================
 
 with drafts:
-    df = cached_pick_grades_df()
+    df = cached_pick_grades_df(source)
     if df.empty:
         st.info("No 3-round rookie draft data yet.")
     else:
@@ -1815,12 +2207,13 @@ with drafts:
 # ============================================================================
 
 with snapshots:
-    df = cached_top_assets_df(top_n=100)
+    df = cached_top_assets_df(top_n=100, source=source)
+    snapshot_cmd = "ktc-snapshot" if source == "ktc" else "snapshot"
     if df.empty:
-        st.info("No snapshots yet — run `lddl snapshot`.")
+        st.info(f"No snapshots yet — run `lddl {snapshot_cmd}`.")
     else:
         section_header(
-            f"Top assets",
+            f"Top assets · {SOURCE_LABELS[source]}",
             subtitle=f"Snapshot {df['snapshot_date'].iloc[0]}",
         )
         position_filter = st.multiselect(
@@ -1856,10 +2249,11 @@ with snapshots:
 
         if snap and snap.get("n_dates", 0) < 2:
             st.info(
-                "Value-over-time charts unlock once `lddl snapshot` has run "
-                "for at least two distinct dates. Right now we only have "
-                f"{snap['n_dates']} day of FC history — keep the daily cron "
-                "running and this section fills in over time."
+                f"Value-over-time charts unlock once `lddl {snapshot_cmd}` "
+                "has run for at least two distinct dates. Right now we only "
+                f"have {snap['n_dates']} day of {SOURCE_LABELS[source]} "
+                "history — keep the daily cron running and this section "
+                "fills in over time."
             )
 
 # ---------- Footer ----------------------------------------------------------

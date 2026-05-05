@@ -15,6 +15,7 @@ import duckdb
 
 from lddl.analysis.franchises import canonical_user_id, is_predecessor
 from lddl.analysis.standings import SeasonRow, season_rows
+from lddl.analysis.snapshots import DEFAULT_SOURCE, Source
 from lddl.analysis.trades import grade_trades_for_season
 
 
@@ -123,7 +124,10 @@ class ManagerCard:
         return sum(t.net_value for t in self.trades)
 
 
-def build_manager_cards(conn: duckdb.DuckDBPyConnection) -> list[ManagerCard]:
+def build_manager_cards(
+    conn: duckdb.DuckDBPyConnection,
+    source: Source = DEFAULT_SOURCE,
+) -> list[ManagerCard]:
     # 1. Pull every manager-identity row, then merge predecessor cards into
     #    their franchise's primary card per lddl/analysis/franchises.py.
     raw_cards: dict[str, ManagerCard] = {}
@@ -188,7 +192,7 @@ def build_manager_cards(conn: duckdb.DuckDBPyConnection) -> list[ManagerCard]:
         ).fetchall()
     ]
     for season in seasons:
-        recap = grade_trades_for_season(conn, season)
+        recap = grade_trades_for_season(conn, season, source=source)
         for trade in recap.trades:
             if trade.is_faab_only or len(trade.sides) < 2:
                 continue

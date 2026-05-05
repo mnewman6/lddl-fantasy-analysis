@@ -55,16 +55,21 @@ class TradeRecommendation:
     contender_name: str
     rebuilder_user_id: str
     rebuilder_name: str
-    contender_gives: RosterAsset
-    rebuilder_gives: RosterAsset
-    value_diff: int          # contender_gives.value − rebuilder_gives.value
-    age_gap: float           # rebuilder_gives.age − contender_gives.age
-    fit_score: float         # 0..1
+    contender_gives: list[RosterAsset]   # 1+ assets per side
+    rebuilder_gives: list[RosterAsset]
+    raw_value_diff: int                  # raw sum diff (contender - rebuilder)
+    effective_value_diff: float          # KTC-adjusted diff
+    age_gap: float                       # avg(rebuilder ages) − avg(contender ages)
+    fit_score: float                     # 0..1
 
 
 def current_rosters(conn: duckdb.DuckDBPyConnection) -> dict[str, list[RosterAsset]]:
-    """Return {canonical_user_id: [RosterAsset...]} from the most recent league."""
-    snap = latest_snapshot(conn)
+    """Return {canonical_user_id: [RosterAsset...]} from the most recent league.
+
+    This module still anchors on FC; migrate to KTC if/when we wire it into
+    the dashboard's recommendation flow.
+    """
+    snap = latest_snapshot(conn, source="fc")
     if snap is None:
         return {}
     where, binds = snap.filter_clause()
@@ -253,13 +258,28 @@ def recommend_trades(
     old_age_min: float = 28.0,
     min_value: int = 1500,
     balance_tolerance: float = 0.20,
-    max_recs: int = 30,
+    max_recs: int = 40,
+    include_uneven: bool = True,
+    max_per_side: int = 2,
+    source: str = "fc",
 ) -> list[TradeRecommendation]:
-    """Generate ranked 1-for-1 swap ideas between contenders and rebuilders.
+    """Ranked swap ideas — both 1-for-1 and (when ``include_uneven=True``)
+    1-for-2 / 2-for-1 / 2-for-2 — between contenders and rebuilders.
 
-    Each rec has a fit score 0..1: 70% from how balanced the values are,
-    30% from the age gap (bigger swap = better strategic fit).
+    Balance is measured on **effective** (KTC-raw-adjusted) values, so a
+    pair of mid-tier players is correctly recognized as worth less than
+    a single elite player. Fit score = 0.7 × balance + 0.3 × age gap.
     """
+    from itertools import combinations
+
+    from lddl.analysis.trade_value import (
+        FC_MAX_VALUE,
+        KTC_MAX_VALUE,
+        effective_value,
+    )
+
+    max_v = FC_MAX_VALUE if source == "fc" else KTC_MAX_VALUE
+
     contenders = [
         a for a in archetypes.values() if a.archetype == ARCHETYPE_CONTENDER
     ]
@@ -267,46 +287,98 @@ def recommend_trades(
         a for a in archetypes.values() if a.archetype == ARCHETYPE_REBUILDER
     ]
 
+    def _bundles(assets: list[RosterAsset]) -> list[tuple[RosterAsset, ...]]:
+        bundles: list[tuple[RosterAsset, ...]] = [(a,) for a in assets]
+        if include_uneven:
+            for k in range(2, max_per_side + 1):
+                if len(assets) >= k:
+                    bundles.extend(combinations(assets, k))
+        return bundles
+
     recs: list[TradeRecommendation] = []
+
     for c in contenders:
-        c_young = [
-            a
-            for a in rosters.get(c.user_id, [])
-            if a.age is not None
-            and a.age <= young_age_max
-            and a.value >= min_value
-        ]
-        for r in rebuilders:
-            r_old = [
-                a
-                for a in rosters.get(r.user_id, [])
+        c_young_pool = sorted(
+            [
+                a for a in rosters.get(c.user_id, [])
                 if a.age is not None
-                and a.age >= old_age_min
+                and a.age <= young_age_max
                 and a.value >= min_value
-            ]
-            for cy in c_young:
-                for ro in r_old:
-                    high = max(cy.value, ro.value)
-                    if high == 0:
+            ],
+            key=lambda a: -a.value,
+        )[:8]  # cap to top-8 to bound combinatorial explosion
+
+        for r in rebuilders:
+            r_old_pool = sorted(
+                [
+                    a for a in rosters.get(r.user_id, [])
+                    if a.age is not None
+                    and a.age >= old_age_min
+                    and a.value >= min_value
+                ],
+                key=lambda a: -a.value,
+            )[:8]
+
+            c_bundles = _bundles(c_young_pool)
+            r_bundles = _bundles(r_old_pool)
+
+            for c_bundle in c_bundles:
+                c_vals = [a.value for a in c_bundle]
+                c_raw = sum(c_vals)
+                for r_bundle in r_bundles:
+                    r_vals = [a.value for a in r_bundle]
+                    r_raw = sum(r_vals)
+                    top = max(*c_vals, *r_vals)
+                    if top <= 0:
                         continue
-                    diff_pct = abs(cy.value - ro.value) / high
+                    c_eff = sum(
+                        effective_value(v, top, max_v) for v in c_vals
+                    )
+                    r_eff = sum(
+                        effective_value(v, top, max_v) for v in r_vals
+                    )
+                    high_eff = max(c_eff, r_eff)
+                    if high_eff <= 0:
+                        continue
+                    diff_pct = abs(c_eff - r_eff) / high_eff
                     if diff_pct > balance_tolerance:
                         continue
-                    age_gap = (ro.age or 0) - (cy.age or 0)
+
+                    c_avg_age = (
+                        sum((a.age or 0) for a in c_bundle) / len(c_bundle)
+                    )
+                    r_avg_age = (
+                        sum((a.age or 0) for a in r_bundle) / len(r_bundle)
+                    )
+                    age_gap = r_avg_age - c_avg_age
                     fit = (1 - diff_pct) * 0.7 + min(age_gap / 10.0, 1.0) * 0.3
+
                     recs.append(
                         TradeRecommendation(
                             contender_user_id=c.user_id,
                             contender_name=c.display_name,
                             rebuilder_user_id=r.user_id,
                             rebuilder_name=r.display_name,
-                            contender_gives=cy,
-                            rebuilder_gives=ro,
-                            value_diff=cy.value - ro.value,
-                            age_gap=age_gap,
+                            contender_gives=list(c_bundle),
+                            rebuilder_gives=list(r_bundle),
+                            raw_value_diff=c_raw - r_raw,
+                            effective_value_diff=round(c_eff - r_eff, 1),
+                            age_gap=round(age_gap, 1),
                             fit_score=round(fit, 4),
                         )
                     )
 
-    recs.sort(key=lambda x: -x.fit_score)
-    return recs[:max_recs]
+    # Deduplicate near-identical recs (same parties + same first asset
+    # on each side often surface multiple times via different bundle sizes).
+    # Keep the highest-fit version per (contender, rebuilder, c_top, r_top).
+    seen: dict[tuple, TradeRecommendation] = {}
+    for rec in recs:
+        c_ids = tuple(sorted(a.player_id for a in rec.contender_gives))
+        r_ids = tuple(sorted(a.player_id for a in rec.rebuilder_gives))
+        key = (rec.contender_user_id, rec.rebuilder_user_id, c_ids, r_ids)
+        prev = seen.get(key)
+        if prev is None or rec.fit_score > prev.fit_score:
+            seen[key] = rec
+
+    deduped = sorted(seen.values(), key=lambda x: -x.fit_score)
+    return deduped[:max_recs]
