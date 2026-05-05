@@ -75,6 +75,7 @@ def season_rows(conn: duckdb.DuckDBPyConnection) -> list[SeasonRow]:
     actual_record = _regular_season_record(conn)
     placements = _final_placements(conn)
     pw, pl = _playoff_record(conn)
+    last_place_by_season = _last_place_by_following_draft(conn)
 
     rows: list[SeasonRow] = []
     for r in base:
@@ -100,12 +101,52 @@ def season_rows(conn: duckdb.DuckDBPyConnection) -> list[SeasonRow]:
                 expected_wins=expected_wins.get(key, 0.0),
                 final_placement=place,
                 is_champion=(place == 1),
-                is_last_place=(place == 12),
+                # "Last place" for LDDL = the team whose R1 pick became the
+                # NEXT year's 1.01. That's by definition the worst-finishing
+                # regular-season team (slots 1-6 are by regular-season order
+                # in this league). Falls back to placement == 12 only when
+                # there's no following draft to read from.
+                is_last_place=(
+                    last_place_by_season.get(season) == rid
+                    if season in last_place_by_season
+                    else (place == 12)
+                ),
                 playoff_wins=pw.get(key, 0),
                 playoff_losses=pl.get(key, 0),
             )
         )
     return rows
+
+
+def _last_place_by_following_draft(
+    conn: duckdb.DuckDBPyConnection,
+) -> dict[str, int]:
+    """For each season N, return the roster_id whose R1 pick was used at
+    slot 1 of season (N+1)'s rookie draft — i.e., the team that finished
+    worst in N's regular season under LDDL's draft-order convention.
+
+    Defers to lddl.analysis.draft_slots.resolve_slots_for_round to walk the
+    transaction_picks chain and back out the original owner.
+    """
+    from lddl.analysis.draft_slots import resolve_slots_for_round
+
+    out: dict[str, int] = {}
+    seasons = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT season FROM leagues ORDER BY season"
+        ).fetchall()
+    ]
+    for i, season in enumerate(seasons):
+        if i + 1 >= len(seasons):
+            continue
+        next_season = seasons[i + 1]
+        orig_to_slot = resolve_slots_for_round(conn, next_season, 1)
+        slot_to_orig = {slot: orig for orig, slot in orig_to_slot.items()}
+        orig_at_one = slot_to_orig.get(1)
+        if orig_at_one is not None:
+            out[season] = orig_at_one
+    return out
 
 
 def _regular_season_record(

@@ -1238,12 +1238,29 @@ with overview:
             else ("last_place" if r["last_places"] > 0 else "neutral"),
             axis=1,
         )
+        pf_min, pf_max = float(df["pf"].min()), float(df["pf"].max())
+        w_min, w_max = float(df["wins"].min()), float(df["wins"].max())
+        pf_pad = max((pf_max - pf_min) * 0.08, 50.0)
+        w_pad = max((w_max - w_min) * 0.10, 2.0)
+
         circle = alt.Chart(df).mark_circle(opacity=0.85).encode(
-            x=alt.X("pf:Q", title="All-time PF"),
-            y=alt.Y("wins:Q", title="Regular-season wins"),
+            x=alt.X(
+                "pf:Q", title="All-time PF",
+                scale=alt.Scale(
+                    domain=[pf_min - pf_pad, pf_max + pf_pad],
+                    nice=False, zero=False,
+                ),
+            ),
+            y=alt.Y(
+                "wins:Q", title="Regular-season wins",
+                scale=alt.Scale(
+                    domain=[w_min - w_pad, w_max + w_pad],
+                    nice=False, zero=False,
+                ),
+            ),
             size=alt.Size(
                 "championships:Q", title="Rings",
-                scale=alt.Scale(range=[120, 700]),
+                scale=alt.Scale(range=[140, 600]),
             ),
             color=alt.Color(
                 "color:N",
@@ -1259,11 +1276,11 @@ with overview:
             ],
         )
         labels = alt.Chart(df).mark_text(
-            dx=10, dy=-8, fontSize=11, color=PALETTE["text"],
-            font="Inter", fontWeight=500,
+            dx=12, dy=-10, fontSize=11, color=PALETTE["text"],
+            font="Inter", fontWeight=500, align="left",
         ).encode(x="pf:Q", y="wins:Q", text="manager")
         st.altair_chart(
-            (circle + labels).properties(height=420),
+            (circle + labels).properties(height=480),
             use_container_width=True,
         )
 
