@@ -1410,16 +1410,20 @@ with trades:
     if df.empty:
         st.info("No trades graded yet.")
     else:
-        section_header("Filter", subtitle="Slice the trade history")
-        f1, f2, f3 = st.columns([1, 1, 2])
-        season_sel = f1.multiselect("Season", seasons, default=seasons)
-        all_managers = sorted(df["manager"].dropna().unique().tolist())
-        manager_sel = f2.multiselect("Manager involved", all_managers, default=[])
-        min_abs = int(f3.slider(
-            "Min |net Δ|", 0,
-            int(max(1, df["net"].abs().max())),
-            value=0,
-        ))
+        # --- Filters live in a collapsed expander; all-trades table goes
+        # first so the page lands you on the history, not on filter widgets.
+        with st.expander("Filters · season, manager, min |net Δ|", expanded=False):
+            f1, f2, f3 = st.columns([1, 1, 2])
+            season_sel = f1.multiselect("Season", seasons, default=seasons)
+            all_managers = sorted(df["manager"].dropna().unique().tolist())
+            manager_sel = f2.multiselect(
+                "Manager involved", all_managers, default=[]
+            )
+            min_abs = int(f3.slider(
+                "Min |net Δ|", 0,
+                int(max(1, df["net"].abs().max())),
+                value=0,
+            ))
 
         view = df[df["season"].isin(season_sel)]
         if manager_sel:
@@ -1428,16 +1432,16 @@ with trades:
         if min_abs:
             view = view[view["net"].abs() >= min_abs]
 
+        # --- 1. All trades table (top of tab) ---------------------------
+        section_header("All trades", subtitle="Click filters above to slice")
         st.markdown(
             f'<div style="color: var(--c-muted); font-family: \'JetBrains Mono\', monospace; '
-            f'font-size: 12px; margin-top: 6px;">'
+            f'font-size: 12px; margin: -4px 0 8px 0;">'
             f'<span style="color: var(--c-orange); font-weight: 700;">{view["transaction_id"].nunique()}</span> trades'
             f' · <span style="color: var(--c-cyan); font-weight: 700;">{len(view)}</span> sides'
             f'</div>',
             unsafe_allow_html=True,
         )
-
-        section_header("All trades")
         st.dataframe(
             view[
                 [
@@ -1450,61 +1454,69 @@ with trades:
             use_container_width=True,
         )
 
-        section_header("Trade-value leaderboard", subtitle="(filtered)")
-        graded = view[view["is_faab_only"] == False]
-        if not graded.empty:
-            wins_per_tx = (
-                graded.groupby("transaction_id")["net"]
-                .max().reset_index().rename(columns={"net": "best_net"})
-            )
-            graded = graded.merge(wins_per_tx, on="transaction_id", how="left")
-            graded["won"] = (graded["net"] == graded["best_net"]) & (graded["best_net"] > 0)
-            leaderboard = (
-                graded.groupby("franchise")
-                .agg(
-                    n_trades=("transaction_id", "nunique"),
-                    total_delta=("net", "sum"),
-                    avg_delta=("net", "mean"),
-                    win_rate=("won", "mean"),
+        # --- 2. Aggregates moved to a collapsed expander to keep the
+        # page short. Open when needed.
+        with st.expander(
+            "Aggregates · leaderboard & trade volume", expanded=False,
+        ):
+            graded = view[view["is_faab_only"] == False]
+            if not graded.empty:
+                section_header(
+                    "Trade-value leaderboard", subtitle="(respects filters)"
                 )
-                .reset_index()
-                .sort_values("total_delta", ascending=False)
+                wins_per_tx = (
+                    graded.groupby("transaction_id")["net"]
+                    .max().reset_index().rename(columns={"net": "best_net"})
+                )
+                graded = graded.merge(wins_per_tx, on="transaction_id", how="left")
+                graded["won"] = (graded["net"] == graded["best_net"]) & (graded["best_net"] > 0)
+                leaderboard = (
+                    graded.groupby("franchise")
+                    .agg(
+                        n_trades=("transaction_id", "nunique"),
+                        total_delta=("net", "sum"),
+                        avg_delta=("net", "mean"),
+                        win_rate=("won", "mean"),
+                    )
+                    .reset_index()
+                    .sort_values("total_delta", ascending=False)
+                )
+                leaderboard["total_delta"] = leaderboard["total_delta"].astype(int)
+                leaderboard["avg_delta"] = leaderboard["avg_delta"].round(0).astype(int)
+                leaderboard["win_rate"] = (leaderboard["win_rate"] * 100).round(0).astype(int)
+                leaderboard.columns = [
+                    "Franchise", "# trades", "Total Δ", "Avg Δ", "Win %",
+                ]
+
+                bar = alt.Chart(leaderboard).mark_bar(cornerRadius=4).encode(
+                    x=alt.X("Total Δ:Q", title="Total trade Δ at current FC values"),
+                    y=alt.Y("Franchise:N", sort="-x"),
+                    color=alt.condition(
+                        "datum['Total Δ'] >= 0",
+                        alt.value(PALETTE["success"]),
+                        alt.value(PALETTE["danger"]),
+                    ),
+                    tooltip=list(leaderboard.columns),
+                ).properties(height=24 * len(leaderboard) + 40)
+                st.altair_chart(bar, use_container_width=True)
+                st.dataframe(leaderboard, hide_index=True, use_container_width=True)
+
+            section_header("Trade volume by season")
+            per_season = (
+                view[view["is_faab_only"] == False]
+                .drop_duplicates("transaction_id")
+                .groupby("season").size().reset_index(name="n")
             )
-            leaderboard["total_delta"] = leaderboard["total_delta"].astype(int)
-            leaderboard["avg_delta"] = leaderboard["avg_delta"].round(0).astype(int)
-            leaderboard["win_rate"] = (leaderboard["win_rate"] * 100).round(0).astype(int)
-            leaderboard.columns = [
-                "Franchise", "# trades", "Total Δ", "Avg Δ", "Win %",
-            ]
+            if not per_season.empty:
+                chart = alt.Chart(per_season).mark_bar(
+                    color=PALETTE["orange"], cornerRadius=4,
+                ).encode(
+                    x="season:O", y=alt.Y("n:Q", title="# trades"),
+                    tooltip=["season", "n"],
+                ).properties(height=240)
+                st.altair_chart(chart, use_container_width=True)
 
-            bar = alt.Chart(leaderboard).mark_bar(cornerRadius=4).encode(
-                x=alt.X("Total Δ:Q", title="Total trade Δ at current FC values"),
-                y=alt.Y("Franchise:N", sort="-x"),
-                color=alt.condition(
-                    "datum['Total Δ'] >= 0",
-                    alt.value(PALETTE["success"]),
-                    alt.value(PALETTE["danger"]),
-                ),
-                tooltip=list(leaderboard.columns),
-            ).properties(height=24 * len(leaderboard) + 40)
-            st.altair_chart(bar, use_container_width=True)
-            st.dataframe(leaderboard, hide_index=True, use_container_width=True)
-
-        section_header("Trade volume by season")
-        per_season = (
-            view[view["is_faab_only"] == False]
-            .drop_duplicates("transaction_id")
-            .groupby("season").size().reset_index(name="n")
-        )
-        if not per_season.empty:
-            chart = alt.Chart(per_season).mark_bar(
-                color=PALETTE["orange"], cornerRadius=4,
-            ).encode(
-                x="season:O", y=alt.Y("n:Q", title="# trades"),
-                tooltip=["season", "n"],
-            ).properties(height=240)
-            st.altair_chart(chart, use_container_width=True)
-
+        # --- 3. Trade detail (drill into one transaction) ---------------
         section_header("Trade detail", subtitle="Expand a single transaction")
         tx_options = (
             view.sort_values("trade_date", ascending=False)["transaction_id"]
