@@ -149,6 +149,31 @@ def report_manager_history() -> None:
     rprint(f"[green]Wrote {pdf_path}[/green]")
 
 
+@app.command()
+def dashboard(
+    port: int = typer.Option(8501, "--port", help="Port to bind to"),
+) -> None:
+    """Launch the local Streamlit dashboard at http://localhost:<port>."""
+    import sys
+    from pathlib import Path
+
+    import streamlit.web.cli as stcli
+
+    app_path = Path(__file__).parent / "dashboard" / "app.py"
+    if not app_path.exists():
+        rprint(f"[red]Dashboard app not found at {app_path}[/red]")
+        raise typer.Exit(code=1)
+
+    rprint(f"[green]Starting LDDL dashboard at http://localhost:{port}[/green]")
+    rprint("[dim]Press Ctrl+C to stop.[/dim]")
+    sys.argv = [
+        "streamlit", "run", str(app_path),
+        "--server.port", str(port),
+        "--browser.gatherUsageStats", "false",
+    ]
+    sys.exit(stcli.main())
+
+
 def main() -> None:
     app()
 

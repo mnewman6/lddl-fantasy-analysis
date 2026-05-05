@@ -58,6 +58,23 @@ uv run lddl report manager-history             # all managers, all seasons
 
 Outputs land in `lddl/output/` as both a multi-page PDF and per-trade / per-manager PNGs. The PNGs are sized for iMessage so you can drop a single image in the group chat without sharing the whole PDF.
 
+## Browsing data interactively (dashboard)
+
+```bash
+uv run lddl dashboard
+# opens http://localhost:8501 — Ctrl+C in the terminal to stop
+```
+
+Five tabs:
+
+- **Overview** — KPIs, champions roll, last-place roll, all-time wins-vs-PF scatter, recent trades.
+- **Managers** — pick a manager from the dropdown, see their card, per-season detail, top trades, PF/PA chart.
+- **Trades** — filter by season, manager involved, or minimum |net Δ|; expand any trade to see each side's give/get tables with FC values.
+- **Drafts** — pick a season, browse the full board, see steals/reaches lists, cumulative draft grade per manager.
+- **Snapshots** — top 100 FC assets at the latest snapshot, top 30-day movers. Value-over-time charts unlock once `lddl snapshot` has run on at least two distinct dates.
+
+The dashboard is local-only — no auth, no hosting. It's a different way to look at the same data the PDFs use.
+
 ```
 lddl/output/
 ├── trade_recap_2024.pdf
