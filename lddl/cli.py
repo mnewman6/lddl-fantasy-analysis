@@ -132,8 +132,21 @@ def report_trade_recap(
 @report_app.command("manager-history")
 def report_manager_history() -> None:
     """Multi-page deep dive on every manager across all seasons."""
-    rprint("[yellow]report manager-history: not yet implemented (build step 5)[/yellow]")
-    raise typer.Exit(code=1)
+    from lddl.config import get_settings
+    from lddl.reports.manager_history import build_manager_history_from_db
+    from lddl.store.db import connect
+
+    settings = get_settings()
+    if not settings.duckdb_path.exists():
+        rprint(
+            f"[red]No DuckDB file at {settings.duckdb_path}.[/red] "
+            "Run `lddl ingest` first."
+        )
+        raise typer.Exit(code=2)
+
+    with connect(settings.duckdb_path) as conn:
+        pdf_path = build_manager_history_from_db(conn, settings.output_dir)
+    rprint(f"[green]Wrote {pdf_path}[/green]")
 
 
 def main() -> None:
