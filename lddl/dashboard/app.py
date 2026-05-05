@@ -1432,8 +1432,10 @@ with trades:
         if min_abs:
             view = view[view["net"].abs() >= min_abs]
 
-        # --- 1. All trades table (top of tab) ---------------------------
-        section_header("All trades", subtitle="Click filters above to slice")
+        # --- 1. All trades table (top of tab) — click any row for detail
+        section_header(
+            "All trades", subtitle="Click any row to see the full trade below"
+        )
         st.markdown(
             f'<div style="color: var(--c-muted); font-family: \'JetBrains Mono\', monospace; '
             f'font-size: 12px; margin: -4px 0 8px 0;">'
@@ -1442,17 +1444,109 @@ with trades:
             f'</div>',
             unsafe_allow_html=True,
         )
-        st.dataframe(
-            view[
+
+        sorted_view = (
+            view.sort_values("trade_date", ascending=False).reset_index(drop=True)
+        )
+        event = st.dataframe(
+            sorted_view[
                 [
                     "trade_date", "season", "n_parties", "manager",
-                    "value_in", "value_out", "net", "is_faab_only",
-                    "transaction_id",
+                    "value_in", "value_out", "net", "transaction_id",
                 ]
-            ].sort_values("trade_date", ascending=False),
+            ],
             hide_index=True,
             use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            column_config={
+                "transaction_id": None,  # hidden, used as selection key
+                "trade_date": st.column_config.DatetimeColumn(
+                    "Date", format="YYYY-MM-DD HH:mm"
+                ),
+                "season": st.column_config.TextColumn("Season"),
+                "n_parties": st.column_config.NumberColumn("Parties"),
+                "manager": st.column_config.TextColumn("Manager"),
+                "value_in": st.column_config.NumberColumn("In", format="%d"),
+                "value_out": st.column_config.NumberColumn("Out", format="%d"),
+                "net": st.column_config.NumberColumn("Net Δ", format="%+d"),
+            },
+            height=420,
         )
+
+        # Resolve the selected transaction; persist across reruns; default
+        # to the most recent visible trade so the detail panel is never empty.
+        selected_tx: str | None = None
+        if event and event.selection.rows:
+            idx = event.selection.rows[0]
+            if 0 <= idx < len(sorted_view):
+                selected_tx = sorted_view.iloc[idx]["transaction_id"]
+                st.session_state["trades_selected_tx"] = selected_tx
+        if selected_tx is None:
+            stashed = st.session_state.get("trades_selected_tx")
+            if stashed and stashed in sorted_view["transaction_id"].values:
+                selected_tx = stashed
+        if selected_tx is None and not sorted_view.empty:
+            selected_tx = sorted_view.iloc[0]["transaction_id"]
+
+        # --- 2. Trade detail — inline directly below the table ----------
+        if selected_tx is not None:
+            sel_row = sorted_view[sorted_view["transaction_id"] == selected_tx]
+            sel_date = (
+                sel_row["trade_date"].iloc[0].strftime("%Y-%m-%d")
+                if not sel_row.empty else "?"
+            )
+            sel_season = sel_row["season"].iloc[0] if not sel_row.empty else "?"
+            sel_parties = " ↔ ".join(sel_row["manager"].tolist())
+            section_header(
+                "Trade detail",
+                subtitle=f"{sel_date} · {sel_season} · {sel_parties}",
+            )
+
+            recap = cached_trade_recap(sel_season)
+            tg = next(
+                (x for x in recap.trades if x.transaction_id == selected_tx),
+                None,
+            )
+            if tg is None:
+                st.info("Trade detail not found.")
+            elif tg.is_faab_only:
+                st.warning("FAAB-only swap — not graded.")
+                for m in tg.faab_movements:
+                    st.write(
+                        f"r{m.get('sender')} → r{m.get('receiver')}: "
+                        f"${m.get('amount')}"
+                    )
+            else:
+                cols = st.columns(len(tg.sides))
+                for col, side in zip(cols, tg.sides):
+                    accent = accent_for(side.display_name)
+                    net = side.net_now()
+                    net_cls = "pos" if net > 0 else ("neg" if net < 0 else "")
+                    with col:
+                        st.markdown(
+                            _h(f"""
+                            <div class="lddl-side" style="--accent: {accent};">
+                              <div class="h">{html.escape(side.display_name)}</div>
+                              <div class="sub">Roster {side.roster_id} · in {side.value_in_now():,} · out {side.value_out_now():,}</div>
+                              <div class="net {net_cls}" style="font-family: 'Bebas Neue', sans-serif; font-size: 30px; line-height: 1; margin-bottom: 8px;">{net:+,}</div>
+                            </div>
+                            """),
+                            unsafe_allow_html=True,
+                        )
+                        rows = [
+                            {"side": "GAVE", "asset": a.label,
+                             "value": a.value_now or 0}
+                            for a in side.given
+                        ] + [
+                            {"side": "GOT", "asset": a.label,
+                             "value": a.value_now or 0}
+                            for a in side.received
+                        ]
+                        st.dataframe(
+                            pd.DataFrame(rows), hide_index=True,
+                            use_container_width=True,
+                        )
 
         # --- 2. Aggregates moved to a collapsed expander to keep the
         # page short. Open when needed.
@@ -1516,62 +1610,6 @@ with trades:
                 ).properties(height=240)
                 st.altair_chart(chart, use_container_width=True)
 
-        # --- 3. Trade detail (drill into one transaction) ---------------
-        section_header("Trade detail", subtitle="Expand a single transaction")
-        tx_options = (
-            view.sort_values("trade_date", ascending=False)["transaction_id"]
-            .drop_duplicates().tolist()
-        )
-        if tx_options:
-            tx_sel = st.selectbox(
-                "Pick a transaction", tx_options,
-                format_func=lambda t: (
-                    f"{view[view['transaction_id']==t]['trade_date'].iloc[0]:%Y-%m-%d}"
-                    f" · {view[view['transaction_id']==t]['season'].iloc[0]}"
-                    f" · "
-                    + " ↔ ".join(view[view["transaction_id"] == t]["manager"].tolist())
-                ),
-            )
-            recap = cached_trade_recap(view[view["transaction_id"] == tx_sel]["season"].iloc[0])
-            tg = next((x for x in recap.trades if x.transaction_id == tx_sel), None)
-            if tg:
-                if tg.is_faab_only:
-                    st.warning("FAAB-only swap — not graded.")
-                    for m in tg.faab_movements:
-                        st.write(
-                            f"r{m.get('sender')} → r{m.get('receiver')}: "
-                            f"${m.get('amount')}"
-                        )
-                else:
-                    cols = st.columns(len(tg.sides))
-                    for col, side in zip(cols, tg.sides):
-                        accent = accent_for(side.display_name)
-                        net = side.net_now()
-                        net_cls = "pos" if net > 0 else ("neg" if net < 0 else "")
-                        with col:
-                            st.markdown(
-                                _h(f"""
-                                <div class="lddl-side" style="--accent: {accent};">
-                                  <div class="h">{html.escape(side.display_name)}</div>
-                                  <div class="sub">Roster {side.roster_id} · in {side.value_in_now():,} · out {side.value_out_now():,}</div>
-                                  <div class="net {net_cls}" style="font-family: 'Bebas Neue', sans-serif; font-size: 30px; line-height: 1; margin-bottom: 8px;">{net:+,}</div>
-                                </div>
-                                """),
-                                unsafe_allow_html=True,
-                            )
-                            rows = [
-                                {"side": "GAVE", "asset": a.label,
-                                 "value": a.value_now or 0}
-                                for a in side.given
-                            ] + [
-                                {"side": "GOT", "asset": a.label,
-                                 "value": a.value_now or 0}
-                                for a in side.received
-                            ]
-                            st.dataframe(
-                                pd.DataFrame(rows), hide_index=True,
-                                use_container_width=True,
-                            )
 
 # ============================================================================
 # TRADE RECOMMENDATIONS
