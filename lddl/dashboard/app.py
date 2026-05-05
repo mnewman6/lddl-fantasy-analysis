@@ -10,20 +10,31 @@ DuckDB connection and analysis aggregations are shared across reruns.
 from __future__ import annotations
 
 import json
+import os
 
 import altair as alt
 import duckdb
 import pandas as pd
 import streamlit as st
 
-from lddl.analysis.drafts import aggregate_by_manager, per_pick_grades
-from lddl.analysis.franchises import canonical_user_id
-from lddl.analysis.managers import build_manager_cards
-from lddl.analysis.snapshots import latest_snapshot
-from lddl.analysis.trades import grade_trades_for_season
-from lddl.config import get_settings
-
 st.set_page_config(page_title="LDDL Fantasy Analysis", layout="wide")
+
+# Bridge Streamlit Cloud secrets → env vars so pydantic-settings picks them up.
+# Locally with .env, this is a no-op (st.secrets is empty / missing).
+try:
+    secrets = dict(st.secrets) if hasattr(st, "secrets") else {}
+except Exception:
+    secrets = {}
+for key in ("SLEEPER_LEAGUE_ID", "LEAGUE_NAME"):
+    if key in secrets and not os.environ.get(key):
+        os.environ[key] = str(secrets[key])
+
+from lddl.analysis.drafts import aggregate_by_manager, per_pick_grades  # noqa: E402
+from lddl.analysis.franchises import canonical_user_id  # noqa: E402
+from lddl.analysis.managers import build_manager_cards  # noqa: E402
+from lddl.analysis.snapshots import latest_snapshot  # noqa: E402
+from lddl.analysis.trades import grade_trades_for_season  # noqa: E402
+from lddl.config import get_settings  # noqa: E402
 
 # ---------- Cached data accessors -----------------------------------------
 

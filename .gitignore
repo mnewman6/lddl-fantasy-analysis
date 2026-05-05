@@ -19,11 +19,15 @@ env/
 # Local config
 .env
 .env.local
+.streamlit/secrets.toml
 
 # Data + generated outputs
-data/
+data/raw/
+data/snapshot.log
 lddl/output/*
 !lddl/output/.gitkeep
+# data/lddl.duckdb is intentionally NOT ignored — it's committed so the
+# Streamlit Cloud deployment has data to display.
 
 # OS
 .DS_Store
