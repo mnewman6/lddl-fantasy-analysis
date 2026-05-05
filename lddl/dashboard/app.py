@@ -101,19 +101,26 @@ def cached_trade_recap(season: str):
 @st.cache_data
 def cached_all_trades_df() -> pd.DataFrame:
     """Flatten every season's trades into one dataframe (one row per side per trade)."""
+    cards = cached_manager_cards()
+    uid_to_franchise = {c.user_id: c.display_name for c in cards}
     rows = []
     for season in cached_seasons():
         recap = cached_trade_recap(season)
         for trade in recap.trades:
             for side in trade.sides:
+                canonical_uid = canonical_user_id(side.user_id)
+                franchise_name = uid_to_franchise.get(canonical_uid, side.display_name)
                 rows.append({
                     "season": season,
                     "trade_date": trade.trade_date,
                     "transaction_id": trade.transaction_id,
                     "is_faab_only": trade.is_faab_only,
                     "n_parties": len(trade.sides),
+                    # `manager`: who actually traded at the time (historical).
                     "manager": side.display_name,
-                    "user_id": side.user_id,
+                    # `franchise`: canonical name across successions.
+                    "franchise": franchise_name,
+                    "user_id": canonical_uid,
                     "roster_id": side.roster_id,
                     "value_in": side.value_in_now(),
                     "value_out": side.value_out_now(),
@@ -440,6 +447,46 @@ with trades:
             hide_index=True,
             use_container_width=True,
         )
+
+        st.subheader("Trade-value leaderboard (filtered)")
+        graded = view[view["is_faab_only"] == False]
+        if not graded.empty:
+            wins_per_tx = (
+                graded.groupby("transaction_id")["net"]
+                .max().reset_index().rename(columns={"net": "best_net"})
+            )
+            graded = graded.merge(wins_per_tx, on="transaction_id", how="left")
+            graded["won"] = (graded["net"] == graded["best_net"]) & (graded["best_net"] > 0)
+            leaderboard = (
+                graded.groupby("franchise")
+                .agg(
+                    n_trades=("transaction_id", "nunique"),
+                    total_delta=("net", "sum"),
+                    avg_delta=("net", "mean"),
+                    win_rate=("won", "mean"),
+                )
+                .reset_index()
+                .sort_values("total_delta", ascending=False)
+            )
+            leaderboard["total_delta"] = leaderboard["total_delta"].astype(int)
+            leaderboard["avg_delta"] = leaderboard["avg_delta"].round(0).astype(int)
+            leaderboard["win_rate"] = (leaderboard["win_rate"] * 100).round(0).astype(int)
+            leaderboard.columns = [
+                "Franchise", "# trades", "Total Δ", "Avg Δ", "Win %",
+            ]
+
+            bar = alt.Chart(leaderboard).mark_bar().encode(
+                x=alt.X("Total Δ:Q", title="Total trade Δ at current FC values"),
+                y=alt.Y("Franchise:N", sort="-x"),
+                color=alt.condition(
+                    "datum['Total Δ'] >= 0",
+                    alt.value("#4f7cac"),
+                    alt.value("#c0524a"),
+                ),
+                tooltip=list(leaderboard.columns),
+            ).properties(height=24 * len(leaderboard) + 40)
+            st.altair_chart(bar, use_container_width=True)
+            st.dataframe(leaderboard, hide_index=True, use_container_width=True)
 
         st.subheader("Trade volume by season")
         per_season = (
