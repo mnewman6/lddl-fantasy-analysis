@@ -42,6 +42,7 @@ class ManagerSeasonAgg:
     fpts_against: float
     ppts: float
     expected_wins: float
+    final_placement: int | None
     is_champion: bool
     is_last_place: bool
     playoff_wins: int
@@ -227,6 +228,7 @@ def build_manager_cards(conn: duckdb.DuckDBPyConnection) -> list[ManagerCard]:
                     fpts_against=sr.fpts_against,
                     ppts=sr.ppts,
                     expected_wins=sr.expected_wins,
+                    final_placement=sr.final_placement,
                     is_champion=sr.is_champion,
                     is_last_place=sr.is_last_place,
                     playoff_wins=sr.playoff_wins,

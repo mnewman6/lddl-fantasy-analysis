@@ -23,10 +23,28 @@ class SeasonRow:
     fpts_against: float
     ppts: float
     expected_wins: float          # by week-median definition
+    final_placement: int | None   # 1..12 from playoff brackets, None if undecided
     is_champion: bool
     is_last_place: bool
     playoff_wins: int
     playoff_losses: int
+
+
+# Sleeper bracket placement → overall final-standings placement.
+# Validated against LDDL 2024 R1 actual draft slots: slots 7-12 are playoff
+# teams ordered by inverse final placement, so champion=1 (slot 12), 2nd=2
+# (slot 11), 6th=6 (slot 7). Losers bracket placements 1/3/5 are the
+# championship / 3rd-place / wildcard-losers games respectively, which
+# determine 7th vs 8th, 9th vs 10th, and 11th vs 12th. losers p=5 LOSER is
+# the dead-last (12th) finisher.
+_BRACKET_PLACEMENT: dict[tuple[str, int, str], int] = {
+    ("winners", 1, "winner"): 1, ("winners", 1, "loser"): 2,
+    ("winners", 3, "winner"): 3, ("winners", 3, "loser"): 4,
+    ("winners", 5, "winner"): 5, ("winners", 5, "loser"): 6,
+    ("losers",  1, "winner"): 7, ("losers",  1, "loser"): 8,
+    ("losers",  3, "winner"): 9, ("losers",  3, "loser"): 10,
+    ("losers",  5, "winner"): 11, ("losers",  5, "loser"): 12,
+}
 
 
 def season_rows(conn: duckdb.DuckDBPyConnection) -> list[SeasonRow]:
@@ -55,7 +73,7 @@ def season_rows(conn: duckdb.DuckDBPyConnection) -> list[SeasonRow]:
 
     expected_wins = _expected_wins_by_roster(conn)
     actual_record = _regular_season_record(conn)
-    champions, last_places = _bracket_finishers(conn)
+    placements = _final_placements(conn)
     pw, pl = _playoff_record(conn)
 
     rows: list[SeasonRow] = []
@@ -63,6 +81,7 @@ def season_rows(conn: duckdb.DuckDBPyConnection) -> list[SeasonRow]:
         season, league_id, status, rid, uid, dn, tn, pf, pa, ppts = r
         key = (league_id, rid)
         w, l, t = actual_record.get(key, (0, 0, 0))
+        place = placements.get(key)
         rows.append(
             SeasonRow(
                 season=season,
@@ -79,8 +98,9 @@ def season_rows(conn: duckdb.DuckDBPyConnection) -> list[SeasonRow]:
                 fpts_against=float(pa),
                 ppts=float(ppts),
                 expected_wins=expected_wins.get(key, 0.0),
-                is_champion=key in champions,
-                is_last_place=key in last_places,
+                final_placement=place,
+                is_champion=(place == 1),
+                is_last_place=(place == 12),
                 playoff_wins=pw.get(key, 0),
                 playoff_losses=pl.get(key, 0),
             )
@@ -152,28 +172,26 @@ def _expected_wins_by_roster(
     return {(r[0], r[1]): float(r[2] or 0.0) for r in rows}
 
 
-def _bracket_finishers(
+def _final_placements(
     conn: duckdb.DuckDBPyConnection,
-) -> tuple[set[tuple[str, int]], set[tuple[str, int]]]:
-    """Champions: winners-bracket placement=1 winner. Last-place: losers-bracket
-    placement=1 loser."""
-    champions: set[tuple[str, int]] = set()
-    last: set[tuple[str, int]] = set()
-    for league_id, winner in conn.execute(
+) -> dict[tuple[str, int], int]:
+    """Return {(league_id, roster_id): placement_1_to_12} from bracket games."""
+    placements: dict[tuple[str, int], int] = {}
+    for league_id, bracket, placement, winner, loser in conn.execute(
         """
-        SELECT league_id, winner FROM playoff_bracket
-        WHERE bracket = 'winners' AND placement = 1 AND winner IS NOT NULL
+        SELECT league_id, bracket, placement, winner, loser
+        FROM playoff_bracket WHERE placement IS NOT NULL
         """
     ).fetchall():
-        champions.add((league_id, winner))
-    for league_id, loser in conn.execute(
-        """
-        SELECT league_id, loser FROM playoff_bracket
-        WHERE bracket = 'losers' AND placement = 1 AND loser IS NOT NULL
-        """
-    ).fetchall():
-        last.add((league_id, loser))
-    return champions, last
+        if winner is not None:
+            p = _BRACKET_PLACEMENT.get((bracket, placement, "winner"))
+            if p is not None:
+                placements[(league_id, winner)] = p
+        if loser is not None:
+            p = _BRACKET_PLACEMENT.get((bracket, placement, "loser"))
+            if p is not None:
+                placements[(league_id, loser)] = p
+    return placements
 
 
 def _playoff_record(

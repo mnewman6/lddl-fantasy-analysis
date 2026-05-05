@@ -58,14 +58,13 @@ def _seed_two_managers_two_seasons(db_path: Path) -> None:
                     "VALUES (?, ?, 1, 2, 80)",
                     [league_id, week],
                 )
-        # alpha (u1) wins championship in 2024, beta (u2) finishes last 2024
+        # alpha (u1) wins championship in 2024 → winners p=1 winner = 1st.
+        # beta (u2) is runner-up → winners p=1 loser = 2nd. (Two-roster
+        # fixture can't fully exercise the losers bracket placements; that
+        # path is verified against live LDDL data manually.)
         conn.execute(
             "INSERT INTO playoff_bracket VALUES "
             "('L24', 'winners', 1, 3, 1, 1, 2, 1, 2, NULL, NULL)"
-        )
-        conn.execute(
-            "INSERT INTO playoff_bracket VALUES "
-            "('L24', 'losers', 1, 3, 1, 1, 2, 1, 2, NULL, NULL)"
         )
         # Managers + a snapshot so trade-recap can run
         conn.execute(
@@ -116,10 +115,16 @@ def test_manager_card_aggregation(tmp_path: Path) -> None:
     by_uid = {c.user_id: c for c in cards}
     assert by_uid["u1"].championships == 1
     assert by_uid["u1"].last_places == 0
+    # u2 is runner-up (placement 2), not dead last.
     assert by_uid["u2"].championships == 0
-    assert by_uid["u2"].last_places == 1
+    assert by_uid["u2"].last_places == 0
     # Luck balances league-wide (the metric's invariant).
     assert abs(sum(c.luck for c in cards)) < 1e-6
+    # Champion is correctly placement 1; runner-up is placement 2.
+    u1_2024 = next(s for s in by_uid["u1"].seasons if s.season == "2024")
+    u2_2024 = next(s for s in by_uid["u2"].seasons if s.season == "2024")
+    assert u1_2024.final_placement == 1
+    assert u2_2024.final_placement == 2
 
 
 def test_build_manager_history_pdf(tmp_path: Path) -> None:
