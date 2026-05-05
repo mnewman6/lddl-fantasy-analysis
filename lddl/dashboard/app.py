@@ -312,7 +312,7 @@ def render_news_ticker() -> None:
             display: inline-block;
             white-space: nowrap;
             padding-left: 110px; /* clear the LIVE badge */
-            animation: lddl-ticker-scroll 240s linear infinite;
+            animation: lddl-ticker-scroll 331s linear infinite;
             color: #fff;
             font-family: 'Courier New', monospace;
             font-size: 15px;
@@ -530,6 +530,43 @@ with managers:
 
 # ---------- Trades ----------------------------------------------------------
 
+def _render_trade_detail(tx_id: str, source_df: pd.DataFrame) -> None:
+    """Render the full give/get tables for a single trade in the placeholder."""
+    season = source_df[source_df["transaction_id"] == tx_id]["season"].iloc[0]
+    recap = cached_trade_recap(season)
+    tg = next((x for x in recap.trades if x.transaction_id == tx_id), None)
+    if tg is None:
+        st.info("Trade detail not found.")
+        return
+    date_str = tg.trade_date.strftime("%Y-%m-%d") if tg.trade_date else "(no date)"
+    parties = " ↔ ".join(s.display_name for s in tg.sides)
+    st.markdown(f"#### {date_str} · {tg.season} · {parties}")
+    if tg.is_faab_only:
+        st.warning("FAAB-only swap — not graded.")
+        for m in tg.faab_movements:
+            st.write(
+                f"r{m.get('sender')} → r{m.get('receiver')}: ${m.get('amount')}"
+            )
+        return
+    side_cols = st.columns(len(tg.sides))
+    for col, side in zip(side_cols, tg.sides):
+        col.markdown(
+            f"**{side.display_name}** (r{side.roster_id})  \n"
+            f"in {side.value_in_now():,} · out {side.value_out_now():,} · "
+            f"**net {side.net_now():+,}**"
+        )
+        rows = [
+            {"side": "GAVE", "asset": a.label, "value": a.value_now or 0}
+            for a in side.given
+        ] + [
+            {"side": "GOT", "asset": a.label, "value": a.value_now or 0}
+            for a in side.received
+        ]
+        col.dataframe(
+            pd.DataFrame(rows), hide_index=True, use_container_width=True,
+        )
+
+
 with trades:
     seasons = cached_seasons()
     df = cached_all_trades_df()
@@ -537,15 +574,24 @@ with trades:
     if df.empty:
         st.info("No trades graded yet.")
     else:
-        f1, f2, f3 = st.columns([1, 1, 2])
-        season_sel = f1.multiselect("Season", seasons, default=seasons)
-        all_managers = sorted(df["manager"].dropna().unique().tolist())
-        manager_sel = f2.multiselect("Manager involved", all_managers, default=[])
-        min_abs = int(f3.slider(
-            "Min |net Δ|", 0,
-            int(max(1, df["net"].abs().max())),
-            value=0,
-        ))
+        # 1) Detail panel — reserve the slot at the top BEFORE the filters /
+        #    table render. We fill it in after we know the user's selection.
+        detail_slot = st.container(border=True)
+
+        # 2) Filters live in a collapsed expander so they don't crowd the
+        #    detail panel.
+        with st.expander("Filters", expanded=False):
+            f1, f2, f3 = st.columns([1, 1, 2])
+            season_sel = f1.multiselect("Season", seasons, default=seasons)
+            all_managers = sorted(df["manager"].dropna().unique().tolist())
+            manager_sel = f2.multiselect(
+                "Manager involved", all_managers, default=[]
+            )
+            min_abs = int(f3.slider(
+                "Min |net Δ|", 0,
+                int(max(1, df["net"].abs().max())),
+                value=0,
+            ))
 
         view = df[df["season"].isin(season_sel)]
         if manager_sel:
@@ -554,123 +600,115 @@ with trades:
         if min_abs:
             view = view[view["net"].abs() >= min_abs]
 
-        # Per-trade aggregation: keep one row per side, but link with detail.
-        st.markdown(f"**{view['transaction_id'].nunique()} trades** — "
-                    f"{len(view)} sides")
-
-        st.subheader("Trades")
-        st.dataframe(
-            view[
+        # 3) Selectable trades table — click any row to drive the detail
+        #    panel above. is_faab_only column dropped; transaction_id hidden
+        #    (kept in the dataframe as the selection key).
+        st.subheader(f"{view['transaction_id'].nunique()} trades · click any row")
+        sorted_view = (
+            view.sort_values("trade_date", ascending=False).reset_index(drop=True)
+        )
+        event = st.dataframe(
+            sorted_view[
                 [
                     "trade_date", "season", "n_parties", "manager",
-                    "value_in", "value_out", "net", "is_faab_only",
-                    "transaction_id",
+                    "value_in", "value_out", "net", "transaction_id",
                 ]
-            ].sort_values("trade_date", ascending=False),
+            ],
             hide_index=True,
             use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            column_config={
+                "transaction_id": None,  # hidden
+                "trade_date": st.column_config.DatetimeColumn(
+                    "Date", format="YYYY-MM-DD HH:mm"
+                ),
+                "season": st.column_config.TextColumn("Season"),
+                "n_parties": st.column_config.NumberColumn("Parties"),
+                "manager": st.column_config.TextColumn("Manager"),
+                "value_in": st.column_config.NumberColumn("In", format="%d"),
+                "value_out": st.column_config.NumberColumn("Out", format="%d"),
+                "net": st.column_config.NumberColumn("Net Δ", format="%+d"),
+            },
+            height=420,
         )
 
-        st.subheader("Trade-value leaderboard (filtered)")
-        graded = view[view["is_faab_only"] == False]
-        if not graded.empty:
-            wins_per_tx = (
-                graded.groupby("transaction_id")["net"]
-                .max().reset_index().rename(columns={"net": "best_net"})
-            )
-            graded = graded.merge(wins_per_tx, on="transaction_id", how="left")
-            graded["won"] = (graded["net"] == graded["best_net"]) & (graded["best_net"] > 0)
-            leaderboard = (
-                graded.groupby("franchise")
-                .agg(
-                    n_trades=("transaction_id", "nunique"),
-                    total_delta=("net", "sum"),
-                    avg_delta=("net", "mean"),
-                    win_rate=("won", "mean"),
+        # 4) Resolve which trade to show: clicked row → fall back to the
+        #    most recent visible trade so the detail panel is never empty.
+        selected_tx = None
+        if event and event.selection.rows:
+            idx = event.selection.rows[0]
+            if 0 <= idx < len(sorted_view):
+                selected_tx = sorted_view.iloc[idx]["transaction_id"]
+                st.session_state["trades_selected_tx"] = selected_tx
+        if selected_tx is None:
+            stashed = st.session_state.get("trades_selected_tx")
+            if stashed and stashed in sorted_view["transaction_id"].values:
+                selected_tx = stashed
+        if selected_tx is None and not sorted_view.empty:
+            selected_tx = sorted_view.iloc[0]["transaction_id"]
+
+        with detail_slot:
+            if selected_tx is None:
+                st.caption("No trades match the current filters.")
+            else:
+                _render_trade_detail(selected_tx, sorted_view)
+
+        # 5) Aggregate stats below — collapsed by default to keep the focus
+        #    on the detail panel + table.
+        with st.expander("Aggregates: leaderboard & volume", expanded=False):
+            graded = view[view["is_faab_only"] == False]
+            if not graded.empty:
+                st.subheader("Trade-value leaderboard (filtered)")
+                wins_per_tx = (
+                    graded.groupby("transaction_id")["net"]
+                    .max().reset_index().rename(columns={"net": "best_net"})
                 )
-                .reset_index()
-                .sort_values("total_delta", ascending=False)
+                graded = graded.merge(wins_per_tx, on="transaction_id", how="left")
+                graded["won"] = (graded["net"] == graded["best_net"]) & (graded["best_net"] > 0)
+                leaderboard = (
+                    graded.groupby("franchise")
+                    .agg(
+                        n_trades=("transaction_id", "nunique"),
+                        total_delta=("net", "sum"),
+                        avg_delta=("net", "mean"),
+                        win_rate=("won", "mean"),
+                    )
+                    .reset_index()
+                    .sort_values("total_delta", ascending=False)
+                )
+                leaderboard["total_delta"] = leaderboard["total_delta"].astype(int)
+                leaderboard["avg_delta"] = leaderboard["avg_delta"].round(0).astype(int)
+                leaderboard["win_rate"] = (leaderboard["win_rate"] * 100).round(0).astype(int)
+                leaderboard.columns = [
+                    "Franchise", "# trades", "Total Δ", "Avg Δ", "Win %",
+                ]
+
+                bar = alt.Chart(leaderboard).mark_bar().encode(
+                    x=alt.X("Total Δ:Q", title="Total trade Δ at current FC values"),
+                    y=alt.Y("Franchise:N", sort="-x"),
+                    color=alt.condition(
+                        "datum['Total Δ'] >= 0",
+                        alt.value("#4f7cac"),
+                        alt.value("#c0524a"),
+                    ),
+                    tooltip=list(leaderboard.columns),
+                ).properties(height=24 * len(leaderboard) + 40)
+                st.altair_chart(bar, use_container_width=True)
+                st.dataframe(leaderboard, hide_index=True, use_container_width=True)
+
+            st.subheader("Trade volume by season")
+            per_season = (
+                view[view["is_faab_only"] == False]
+                .drop_duplicates("transaction_id")
+                .groupby("season").size().reset_index(name="n")
             )
-            leaderboard["total_delta"] = leaderboard["total_delta"].astype(int)
-            leaderboard["avg_delta"] = leaderboard["avg_delta"].round(0).astype(int)
-            leaderboard["win_rate"] = (leaderboard["win_rate"] * 100).round(0).astype(int)
-            leaderboard.columns = [
-                "Franchise", "# trades", "Total Δ", "Avg Δ", "Win %",
-            ]
-
-            bar = alt.Chart(leaderboard).mark_bar().encode(
-                x=alt.X("Total Δ:Q", title="Total trade Δ at current FC values"),
-                y=alt.Y("Franchise:N", sort="-x"),
-                color=alt.condition(
-                    "datum['Total Δ'] >= 0",
-                    alt.value("#4f7cac"),
-                    alt.value("#c0524a"),
-                ),
-                tooltip=list(leaderboard.columns),
-            ).properties(height=24 * len(leaderboard) + 40)
-            st.altair_chart(bar, use_container_width=True)
-            st.dataframe(leaderboard, hide_index=True, use_container_width=True)
-
-        st.subheader("Trade volume by season")
-        per_season = (
-            view[view["is_faab_only"] == False]
-            .drop_duplicates("transaction_id")
-            .groupby("season").size().reset_index(name="n")
-        )
-        if not per_season.empty:
-            chart = alt.Chart(per_season).mark_bar(color="#4f7cac").encode(
-                x="season:O", y="n:Q",
-                tooltip=["season", "n"],
-            ).properties(height=240)
-            st.altair_chart(chart, use_container_width=True)
-
-        st.subheader("Trade detail")
-        tx_options = (
-            view.sort_values("trade_date", ascending=False)["transaction_id"]
-            .drop_duplicates().tolist()
-        )
-        if tx_options:
-            tx_sel = st.selectbox(
-                "Pick a transaction to expand", tx_options,
-                format_func=lambda t: (
-                    f"{view[view['transaction_id']==t]['trade_date'].iloc[0]:%Y-%m-%d}"
-                    f" · {view[view['transaction_id']==t]['season'].iloc[0]}"
-                    f" · "
-                    + " ↔ ".join(view[view["transaction_id"] == t]["manager"].tolist())
-                ),
-            )
-            recap = cached_trade_recap(view[view["transaction_id"] == tx_sel]["season"].iloc[0])
-            tg = next((x for x in recap.trades if x.transaction_id == tx_sel), None)
-            if tg:
-                if tg.is_faab_only:
-                    st.warning("FAAB-only swap — not graded.")
-                    for m in tg.faab_movements:
-                        st.write(
-                            f"r{m.get('sender')} → r{m.get('receiver')}: "
-                            f"${m.get('amount')}"
-                        )
-                else:
-                    cols = st.columns(len(tg.sides))
-                    for col, side in zip(cols, tg.sides):
-                        col.markdown(
-                            f"**{side.display_name}** (r{side.roster_id})  \n"
-                            f"in {side.value_in_now():,} · "
-                            f"out {side.value_out_now():,} · "
-                            f"**net {side.net_now():+,}**"
-                        )
-                        rows = [
-                            {"side": "GAVE", "asset": a.label,
-                             "value": a.value_now or 0}
-                            for a in side.given
-                        ] + [
-                            {"side": "GOT", "asset": a.label,
-                             "value": a.value_now or 0}
-                            for a in side.received
-                        ]
-                        col.dataframe(
-                            pd.DataFrame(rows), hide_index=True,
-                            use_container_width=True,
-                        )
+            if not per_season.empty:
+                chart = alt.Chart(per_season).mark_bar(color="#4f7cac").encode(
+                    x="season:O", y="n:Q",
+                    tooltip=["season", "n"],
+                ).properties(height=240)
+                st.altair_chart(chart, use_container_width=True)
 
 # ---------- Drafts ----------------------------------------------------------
 
