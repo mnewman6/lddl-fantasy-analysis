@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from lddl.analysis.drafts import aggregate_by_manager, per_pick_grades
+from lddl.analysis.franchises import canonical_user_id
 from lddl.analysis.managers import build_manager_cards
 from lddl.analysis.snapshots import latest_snapshot
 from lddl.analysis.trades import grade_trades_for_season
@@ -133,21 +134,30 @@ def cached_pick_grades_df() -> pd.DataFrame:
     if snap is None:
         return pd.DataFrame()
     grades = per_pick_grades(conn, snap)
-    return pd.DataFrame([
-        {
+    cards = build_manager_cards(conn)
+    uid_to_franchise_name = {c.user_id: c.display_name for c in cards}
+    rows = []
+    for g in grades:
+        canonical_uid = canonical_user_id(g.picked_by_user_id)
+        franchise_name = uid_to_franchise_name.get(
+            canonical_uid, g.picked_by_display_name
+        )
+        rows.append({
             "season": g.season,
             "round": g.round,
             "slot": g.draft_slot,
             "pick_no": (g.round - 1) * 12 + g.draft_slot,
+            # `manager`: who actually picked at the time (historical fidelity).
             "manager": g.picked_by_display_name,
-            "user_id": g.picked_by_user_id,
+            # `franchise`: canonical franchise name for cross-season aggregation.
+            "franchise": franchise_name,
+            "user_id": canonical_uid,
             "player": g.player_name or "(unknown)",
             "actual": g.actual_value,
             "expected": round(g.expected_value, 1),
             "delta": round(g.delta, 1),
-        }
-        for g in grades
-    ])
+        })
+    return pd.DataFrame(rows)
 
 
 @st.cache_data
@@ -551,8 +561,8 @@ with drafts:
                 hide_index=True, use_container_width=True,
             )
 
-        st.subheader("Cumulative draft grade per manager (all seasons)")
-        agg = df.groupby("manager").agg(
+        st.subheader("Cumulative draft grade per franchise (all seasons)")
+        agg = df.groupby("franchise").agg(
             picks=("pick_no", "count"),
             avg_delta=("delta", "mean"),
             total_delta=("delta", "sum"),

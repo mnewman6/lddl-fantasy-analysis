@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 import duckdb
 
+from lddl.analysis.franchises import canonical_user_id, is_predecessor
 from lddl.analysis.standings import SeasonRow, season_rows
 from lddl.analysis.trades import grade_trades_for_season
 
@@ -122,8 +123,9 @@ class ManagerCard:
 
 
 def build_manager_cards(conn: duckdb.DuckDBPyConnection) -> list[ManagerCard]:
-    # 1. Pull manager identity rows
-    cards_by_uid: dict[str, ManagerCard] = {}
+    # 1. Pull every manager-identity row, then merge predecessor cards into
+    #    their franchise's primary card per lddl/analysis/franchises.py.
+    raw_cards: dict[str, ManagerCard] = {}
     for r in conn.execute(
         """
         SELECT user_id, display_name, aliases, team_names,
@@ -132,7 +134,7 @@ def build_manager_cards(conn: duckdb.DuckDBPyConnection) -> list[ManagerCard]:
         """
     ).fetchall():
         uid, dn, aliases_j, teams_j, first_s, last_s = r
-        cards_by_uid[uid] = ManagerCard(
+        raw_cards[uid] = ManagerCard(
             user_id=uid,
             display_name=dn or uid,
             aliases=json.loads(aliases_j) if aliases_j else [],
@@ -141,15 +143,43 @@ def build_manager_cards(conn: duckdb.DuckDBPyConnection) -> list[ManagerCard]:
             last_seen_season=last_s,
         )
 
-    # 2. Per-season standings → aggregate by user_id
+    cards_by_uid: dict[str, ManagerCard] = {
+        uid: card for uid, card in raw_cards.items()
+        if not is_predecessor(uid)
+    }
+    for pred_uid, pred_card in raw_cards.items():
+        canonical = canonical_user_id(pred_uid)
+        if canonical == pred_uid:
+            continue
+        target = cards_by_uid.get(canonical)
+        if target is None:
+            target = ManagerCard(
+                user_id=canonical,
+                display_name=pred_card.display_name,
+                aliases=[],
+                team_names=[],
+                first_seen_season=pred_card.first_seen_season,
+                last_seen_season=pred_card.last_seen_season,
+            )
+            cards_by_uid[canonical] = target
+        merged_aliases = set(target.aliases) | set(pred_card.aliases) | {pred_card.display_name}
+        target.aliases = sorted(merged_aliases)
+        target.team_names = sorted(set(target.team_names) | set(pred_card.team_names))
+        if pred_card.first_seen_season < target.first_seen_season:
+            target.first_seen_season = pred_card.first_seen_season
+        if pred_card.last_seen_season > target.last_seen_season:
+            target.last_seen_season = pred_card.last_seen_season
+
+    # 2. Per-season standings → aggregate by canonical user_id
     rows_by_uid: dict[str, list[SeasonRow]] = defaultdict(list)
     for sr in season_rows(conn):
-        if sr.user_id and sr.user_id in cards_by_uid:
-            rows_by_uid[sr.user_id].append(sr)
+        canonical = canonical_user_id(sr.user_id)
+        if canonical and canonical in cards_by_uid:
+            rows_by_uid[canonical].append(sr)
 
     # 3. Per-season trade activity (recap each season once)
-    trade_counts: dict[tuple[str, str], int] = defaultdict(int)   # (user_id, season) → count
-    trade_net: dict[tuple[str, str], int] = defaultdict(int)      # (user_id, season) → net
+    trade_counts: dict[tuple[str, str], int] = defaultdict(int)
+    trade_net: dict[tuple[str, str], int] = defaultdict(int)
     seasons = [
         r[0]
         for r in conn.execute(
@@ -163,11 +193,12 @@ def build_manager_cards(conn: duckdb.DuckDBPyConnection) -> list[ManagerCard]:
                 continue
             best_net = max(s.net_now() for s in trade.sides)
             for side in trade.sides:
-                if not side.user_id or side.user_id not in cards_by_uid:
+                canonical = canonical_user_id(side.user_id)
+                if not canonical or canonical not in cards_by_uid:
                     continue
-                trade_counts[(side.user_id, season)] += 1
-                trade_net[(side.user_id, season)] += side.net_now()
-                cards_by_uid[side.user_id].trades.append(
+                trade_counts[(canonical, season)] += 1
+                trade_net[(canonical, season)] += side.net_now()
+                cards_by_uid[canonical].trades.append(
                     TradeRecord(
                         transaction_id=trade.transaction_id,
                         season=trade.season,

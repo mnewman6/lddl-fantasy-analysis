@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import duckdb
 
+from lddl.analysis.franchises import canonical_user_id
 from lddl.analysis.snapshots import SnapshotRef
 
 
@@ -100,8 +101,9 @@ def per_pick_grades(
 def aggregate_by_manager(grades: list[PickGrade]) -> dict[str, ManagerDraftGrade]:
     by_user: dict[str, list[PickGrade]] = defaultdict(list)
     for g in grades:
-        if g.picked_by_user_id:
-            by_user[g.picked_by_user_id].append(g)
+        canonical = canonical_user_id(g.picked_by_user_id)
+        if canonical:
+            by_user[canonical].append(g)
 
     out: dict[str, ManagerDraftGrade] = {}
     for uid, picks in by_user.items():
